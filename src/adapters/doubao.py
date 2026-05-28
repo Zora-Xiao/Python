@@ -173,8 +173,34 @@ class DoubaoAdapter(BaseAdapter):
             await self.page.wait_for_timeout(500)
             await self.page.fill(input_selector, question)
             await self.page.wait_for_timeout(500)
-            await self.page.press(input_selector, "Enter")
 
+            try:
+                send_button_selectors = [
+                    "button[type='submit']",
+                    "button:has-text('发送')",
+                    "button:has-text('Send')",
+                    ".send-btn",
+                    ".submit-btn",
+                    "[aria-label*='发送']",
+                    "[aria-label*='Send']"
+                ]
+
+                for send_selector in send_button_selectors:
+                    try:
+                        await self.page.wait_for_selector(send_selector, timeout=2000)
+                        await self.page.click(send_selector)
+                        logger.info(f"豆包点击发送按钮: {send_selector}")
+                        break
+                    except:
+                        continue
+                else:
+                    await self.page.keyboard.press("Enter")
+                    logger.info("豆包使用Enter键发送消息")
+            except Exception as e:
+                logger.warning(f"豆包点击发送按钮失败，使用Enter键: {str(e)}")
+                await self.page.keyboard.press("Enter")
+
+            await self.page.wait_for_timeout(1000)
             logger.info(f"豆包成功发送消息：{question[:30]}...")
 
         except Exception as e:
@@ -183,13 +209,36 @@ class DoubaoAdapter(BaseAdapter):
 
     async def _get_answer(self) -> str:
         try:
-            answer_selector = ".message-content"
-            await self.page.wait_for_selector(answer_selector, timeout=15000)
-            answer_elements = await self.page.query_selector_all(answer_selector)
+            answer_selectors = [
+                ".message-content",
+                ".chat-message-content",
+                ".assistant-message",
+                ".ai-response",
+                ".response-content",
+                "div[data-testid='message-content']",
+                ".message-body",
+                "[role='paragraph']",
+                ".markdown-body",
+                ".answer-content",
+                ".result-content"
+            ]
 
-            if answer_elements:
-                last_answer = answer_elements[-1]
-                answer = await last_answer.inner_text()
+            await self.page.wait_for_timeout(5000)
+
+            answer_element = None
+            for selector in answer_selectors:
+                try:
+                    elements = await self.page.query_selector_all(selector)
+                    if elements and len(elements) > 0:
+                        answer_element = elements[-1]
+                        logger.info(f"豆包找到回答元素: {selector}")
+                        break
+                except Exception as e:
+                    logger.warning(f"豆包选择器 {selector} 查询失败: {str(e)}")
+                    continue
+
+            if answer_element:
+                answer = await answer_element.inner_text()
                 return answer.strip()
 
             return "未找到回答"
@@ -197,25 +246,25 @@ class DoubaoAdapter(BaseAdapter):
             logger.error(f"豆包获取回答失败：{str(e)}")
             return "获取回答失败"
 
-    async def screenshot(self, question: Question, answer: str) -> Optional[str]:
+    async def screenshot(self, question: Question, answer: str) -> tuple[Optional[str], bool]:
         if self.page is None:
-            return None
+            return None, False
 
         try:
             from src.utils.screenshot import ScreenshotTool
             screenshot_tool = ScreenshotTool()
 
             await self.page.wait_for_timeout(1000)
-            screenshot_path = await screenshot_tool.capture_from_page(
+            screenshot_path, is_shared_image, share_link = await screenshot_tool.capture_from_page(
                 self.page,
                 self.platform_id,
                 question
             )
-            return screenshot_path
+            return screenshot_path, is_shared_image, share_link
 
         except Exception as e:
             logger.error(f"豆包截图失败：{str(e)}")
-            return None
+            return None, False, None
 
     async def close(self):
         await super().close()

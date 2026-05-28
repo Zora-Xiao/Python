@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Optional, Tuple
 from src.adapters.base import BaseAdapter
 from src.models.question import Question
 from src.utils.logger import logger
@@ -128,11 +128,18 @@ class QwenAdapter(BaseAdapter):
                 "textarea[placeholder*='Message']",
                 "textarea[placeholder*='ask']",
                 "textarea[placeholder*='Send']",
+                "textarea[placeholder*='AI']",
+                "textarea",
                 "input[type='text']",
                 "input[placeholder*='输入']",
                 "input[placeholder*='提问']",
                 "div[contenteditable='true']",
-                "[role='textbox']"
+                "[contenteditable='true']",
+                "[role='textbox']",
+                ".chat-input",
+                ".composer-input",
+                "#prompt-input",
+                "[data-testid*='input']"
             ]
             
             input_selector = None
@@ -175,25 +182,25 @@ class QwenAdapter(BaseAdapter):
             logger.error(f"千问获取回答失败：{str(e)}")
             return "获取回答失败"
     
-    async def screenshot(self, question: Question, answer: str) -> Optional[str]:
+    async def screenshot(self, question: Question, answer: str) -> tuple[Optional[str], bool]:
         if self.page is None:
-            return None
+            return None, False
         
         try:
             from src.utils.screenshot import ScreenshotTool
             screenshot_tool = ScreenshotTool()
             
             await self.page.wait_for_timeout(1000)
-            screenshot_path = await screenshot_tool.capture_from_page(
+            screenshot_path, is_shared_image, share_link = await screenshot_tool.capture_from_page(
                 self.page, 
                 self.platform_id, 
                 question
             )
-            return screenshot_path
+            return screenshot_path, is_shared_image, share_link
             
         except Exception as e:
             logger.error(f"千问截图失败：{str(e)}")
-            return None
+            return None, False, None
     
     async def close(self):
         await super().close()

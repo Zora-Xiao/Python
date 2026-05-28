@@ -11,9 +11,11 @@ class Result:
     answer: str
     status: str  # "success", "error", "timeout"
     screenshot_path: Optional[str] = None
+    is_shared_image: bool = False
     matched_rules: Optional[list] = None
     error_message: Optional[str] = None
     timestamp: Optional[datetime] = None
+    share_link: Optional[str] = None
     
     def __post_init__(self):
         if self.matched_rules is None:

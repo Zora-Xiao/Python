@@ -12,11 +12,17 @@ class DeepseekAdapter(BaseAdapter):
     
     async def _execute_login(self) -> bool:
         try:
+            # 先等待页面加载完成
+            await self.page.wait_for_timeout(5000)
+            
             login_button_selectors = [
                 "button:has-text('登录')",
                 "button:has-text('Sign In')",
                 "[data-testid='login']",
-                ".login-btn"
+                ".login-btn",
+                "button[data-testid*='login']",
+                ".ds-basic-button:has-text('登录')",
+                "[role='button']:has-text('登录')"
             ]
             
             login_button = None
@@ -33,7 +39,37 @@ class DeepseekAdapter(BaseAdapter):
                 return False
             
             await self.page.click(login_button)
-            await self.page.wait_for_timeout(2000)
+            await self.page.wait_for_timeout(3000)  # 增加等待时间
+            
+            # 尝试切换到密码登录模式
+            logger.info("Deepseek尝试切换到密码登录模式...")
+            password_login_selectors = [
+                "button:has-text('密码登录')",
+                "button:has-text('使用密码登录')",
+                "button:has-text('Password Login')",
+                "a:has-text('密码登录')",
+                "div:has-text('密码登录')",
+                ".password-login-btn",
+                "[data-testid*='password-login']"
+            ]
+            
+            for selector in password_login_selectors:
+                try:
+                    elements = await self.page.query_selector_all(selector)
+                    if elements and len(elements) > 0:
+                        for elem in elements:
+                            try:
+                                is_visible = await elem.is_visible()
+                                if is_visible:
+                                    await elem.click()
+                                    logger.info(f"Deepseek已切换到密码登录模式: {selector}")
+                                    await self.page.wait_for_timeout(2000)
+                                    break
+                            except:
+                                continue
+                        break
+                except:
+                    continue
             
             username_selectors = [
                 "input[name='username']",
@@ -64,7 +100,11 @@ class DeepseekAdapter(BaseAdapter):
             password_selectors = [
                 "input[name='password']",
                 "input[type='password']",
-                "input[placeholder*='密码']"
+                "input[placeholder*='密码']",
+                "input[placeholder*='Password']",
+                ".ds-input[type='password']",
+                "[data-testid*='password']",
+                "input[class*='password']"
             ]
             
             password_selector = None
@@ -122,29 +162,59 @@ class DeepseekAdapter(BaseAdapter):
     
     async def _send_message(self, question: str) -> None:
         try:
+            # 增加等待时间，确保页面完全加载
+            await self.page.wait_for_timeout(2000)
+            
             input_selectors = [
                 "textarea[placeholder*='输入']",
                 "textarea[placeholder*='提问']",
                 "textarea[placeholder*='Message']",
                 "textarea[placeholder*='ask']",
                 "textarea[placeholder*='Send']",
+                "textarea[placeholder*='AI']",
+                "textarea",
                 "input[type='text']",
                 "input[placeholder*='输入']",
                 "input[placeholder*='提问']",
                 "div[contenteditable='true']",
-                "[role='textbox']"
+                "[contenteditable='true']",
+                "[role='textbox']",
+                ".chat-input",
+                ".composer-input",
+                "#prompt-input",
+                "[data-testid*='input']",
+                ".ds-input",
+                "[class*='input']",
+                # 新增更多选择器
+                "[class*='textarea']",
+                ".message-input",
+                ".prompt-input",
+                ".ask-input",
+                "[placeholder*='输入']",
+                "[placeholder*='提问']"
             ]
             
             input_selector = None
             for selector in input_selectors:
                 try:
-                    await self.page.wait_for_selector(selector, timeout=10000)
-                    input_selector = selector
-                    break
+                    await self.page.wait_for_selector(selector, timeout=5000)
+                    # 检查元素是否可见
+                    element = await self.page.query_selector(selector)
+                    if element:
+                        is_visible = await element.is_visible()
+                        if is_visible:
+                            input_selector = selector
+                            break
                 except:
                     continue
             
             if not input_selector:
+                # 尝试打印页面上所有可能的输入元素进行调试
+                try:
+                    elements = await self.page.query_selector_all("textarea, input[type='text'], [contenteditable]")
+                    logger.info(f"Deepseek 页面上找到 {len(elements)} 个潜在输入元素")
+                except:
+                    pass
                 raise Exception("未找到输入框")
             
             await self.page.click(input_selector)
@@ -175,25 +245,25 @@ class DeepseekAdapter(BaseAdapter):
             logger.error(f"Deepseek 获取回答失败：{str(e)}")
             return "获取回答失败"
     
-    async def screenshot(self, question: Question, answer: str) -> Optional[str]:
+    async def screenshot(self, question: Question, answer: str) -> tuple[Optional[str], bool, Optional[str]]:
         if self.page is None:
-            return None
+            return None, False, None
         
         try:
             from src.utils.screenshot import ScreenshotTool
             screenshot_tool = ScreenshotTool()
             
             await self.page.wait_for_timeout(1000)
-            screenshot_path = await screenshot_tool.capture_from_page(
+            screenshot_path, is_shared_image, share_link = await screenshot_tool.capture_from_page(
                 self.page, 
                 self.platform_id, 
                 question
             )
-            return screenshot_path
+            return screenshot_path, is_shared_image, share_link
             
         except Exception as e:
             logger.error(f"Deepseek 截图失败：{str(e)}")
-            return None
+            return None, False, None
     
     async def close(self):
         await super().close()

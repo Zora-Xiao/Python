@@ -23,6 +23,13 @@ class ExcelExporter:
         
         data = []
         for result in results:
+            image_note = ""
+            if result.screenshot_path:
+                if getattr(result, 'is_shared_image', False):
+                    image_note = "分享图片"
+                else:
+                    image_note = "页面截图（可手动替换）"
+            
             data.append({
                 "问题ID": result.question_id,
                 "平台": result.platform_name,
@@ -32,7 +39,9 @@ class ExcelExporter:
                 "匹配规则": ", ".join(result.matched_rules) if result.matched_rules else "",
                 "错误信息": result.error_message or "",
                 "时间": result.timestamp.strftime("%Y-%m-%d %H:%M:%S") if result.timestamp else "",
-                "截图路径": result.screenshot_path or ""
+                "截图类型": image_note,
+                "截图路径": result.screenshot_path or "",
+                "分享链接": result.share_link or ""
             })
         
         df = pd.DataFrame(data)
@@ -74,21 +83,36 @@ class ExcelExporter:
         ws.column_dimensions['F'].width = 20
         ws.column_dimensions['G'].width = 30
         ws.column_dimensions['H'].width = 20
-        ws.column_dimensions['I'].width = 40
+        ws.column_dimensions['I'].width = 20
+        ws.column_dimensions['J'].width = 40
+        ws.column_dimensions['K'].width = 50
         
         for idx, result in enumerate(results, start=2):
-            if result.screenshot_path and Path(result.screenshot_path).exists():
-                try:
-                    img = OpenpyxlImage(result.screenshot_path)
-                    img.width = 200
-                    img.height = 150
-                    
-                    img_cell = f'I{idx}'
-                    ws.add_image(img, img_cell)
-                    
-                    ws.row_dimensions[idx].height = 120
-                except Exception as e:
-                    logger.warning(f"无法插入截图 {result.screenshot_path}: {str(e)}")
+            if result.screenshot_path:
+                # 确保使用绝对路径
+                screenshot_path = Path(result.screenshot_path)
+                if not screenshot_path.is_absolute():
+                    screenshot_path = Path.cwd() / result.screenshot_path
+                
+                logger.info(f"处理截图: {screenshot_path}, 存在: {screenshot_path.exists()}")
+                
+                if screenshot_path.exists():
+                    try:
+                        img = OpenpyxlImage(str(screenshot_path))
+                        img.width = 200
+                        img.height = 150
+                        
+                        img_cell = f'J{idx}'
+                        ws.add_image(img, img_cell)
+                        
+                        ws.row_dimensions[idx].height = 120
+                        logger.info(f"截图成功插入到单元格 {img_cell}")
+                    except Exception as e:
+                        logger.error(f"无法插入截图 {screenshot_path}: {str(e)}")
+                else:
+                    logger.warning(f"截图文件不存在: {screenshot_path}")
+            else:
+                logger.info(f"结果 {result.question_id} 没有截图路径")
         
         wb.save(filepath)
     

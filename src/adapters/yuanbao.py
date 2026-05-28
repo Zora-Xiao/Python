@@ -175,25 +175,25 @@ class YuanbaoAdapter(BaseAdapter):
             logger.error(f"元宝获取回答失败：{str(e)}")
             return "获取回答失败"
     
-    async def screenshot(self, question: Question, answer: str) -> Optional[str]:
+    async def screenshot(self, question: Question, answer: str) -> tuple[Optional[str], bool, Optional[str]]:
         if self.page is None:
-            return None
+            return None, False, None
         
         try:
             from src.utils.screenshot import ScreenshotTool
             screenshot_tool = ScreenshotTool()
             
             await self.page.wait_for_timeout(1000)
-            screenshot_path = await screenshot_tool.capture_from_page(
+            screenshot_path, is_shared_image, share_link = await screenshot_tool.capture_from_page(
                 self.page, 
                 self.platform_id, 
                 question
             )
-            return screenshot_path
+            return screenshot_path, is_shared_image, share_link
             
         except Exception as e:
             logger.error(f"元宝截图失败：{str(e)}")
-            return None
+            return None, False, None
     
     async def close(self):
         await super().close()
