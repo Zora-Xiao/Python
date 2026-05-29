@@ -31,9 +31,8 @@
    - **截图流程**（千问平台）：
      - 等待AI回复完成（检测输入框可用或回复内容已渲染）
      - 第一步：页面全屏截图
-     - 第二步：点击"..."更多按钮（SVG图标，use xlink:href="#icon-line-more-01"）
-     - 第三步：点击下拉菜单中的"分享"按钮（li.ant-dropdown-menu-item.chat-menu-item）
-     - 第四步：点击"复制链接"按钮，并保存链接到文本文件
+     - 第二步：点击分享按钮（精确选择器 .qwen-chat-package-comp-new-action-control-container-share）
+     - 第三步：点击"复制链接"按钮（button:has-text('复制链接')），并保存链接到文本文件
      - 失败回退：若分享链接失败，仅保留页面截图
    - **截图流程**（Deepseek平台）：
      - 等待AI回复完成（检测输入框可用或回复内容已渲染）
@@ -51,5 +50,6 @@
 - 并发：asyncio + aiohttp
 - 浏览器：Playwright（无头模式）
 - 表格：pandas + openpyxl
+- 剪贴板：pyperclip（系统剪贴板访问）
 - 限速：令牌桶 + 指数退避 + 随机间隔
 - 编码：UTF-8，日志级别INFO
