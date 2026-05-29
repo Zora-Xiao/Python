@@ -6,6 +6,10 @@ from src.utils.logger import logger
 from pathlib import Path
 import json
 import asyncio
+import os
+
+# 设置环境变量解决EPIPE问题（Node.js v24与Playwright兼容性问题）
+os.environ.setdefault('PLAYWRIGHT_TRANSPORT', 'websocket')
 
 
 class BaseAdapter(ABC):
@@ -16,6 +20,7 @@ class BaseAdapter(ABC):
         self.api_url = config.get("api_url", "")
         self.use_playwright = config.get("use_playwright", True)
         self.browser: Optional[Browser] = None
+        self.playwright = None
         self.page: Optional[Page] = None
         self.platform_url = config.get("web_url", "")
         self.login_required = config.get("login_required", True)
@@ -61,8 +66,9 @@ class BaseAdapter(ABC):
                     self.page = None
 
                 if self.browser is None:
-                    playwright = await async_playwright().start()
-                    self.browser = await playwright.chromium.launch(
+                    if self.playwright is None:
+                        self.playwright = await async_playwright().start()
+                    self.browser = await self.playwright.chromium.launch(
                         headless=False,
                         args=['--disable-blink-features=AutomationControlled',
                               '--disable-dev-shm-usage',
@@ -246,18 +252,25 @@ class BaseAdapter(ABC):
     
     async def ask(self, question: Question) -> tuple[str, str]:
         try:
+            logger.info(f"{self.name}开始处理问题: {question.text[:30]}...")
+            
+            logger.info(f"{self.name}步骤1: 获取浏览器")
             await self._get_browser()
             
             # 导航到聊天页面
+            logger.info(f"{self.name}步骤2: 导航到聊天页面")
             if not await self._navigate_to_chat():
                 return "无法导航到对话页面", "error"
             
             # 检查是否需要登录，如果需要则等待用户手动登录
             if self.login_required:
+                logger.info(f"{self.name}步骤3: 检查登录状态")
                 await self._ensure_logged_in()
             
             # 尝试发送消息
+            logger.info(f"{self.name}步骤4: 发送消息并获取回答")
             answer = await self._send_message_and_get_answer(question.text)
+            logger.info(f"{self.name}步骤5: 获取回答成功，长度: {len(answer)}")
             return answer, "success"
             
         except Exception as e:
@@ -449,3 +462,6 @@ class BaseAdapter(ABC):
             await self.browser.close()
             self.browser = None
             self.page = None
+        if self.playwright:
+            await self.playwright.stop()
+            self.playwright = None

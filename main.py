@@ -1,3 +1,7 @@
+# 在导入任何模块之前设置环境变量，解决Node.js v24与Playwright的EPIPE兼容性问题
+import os
+os.environ['PLAYWRIGHT_TRANSPORT'] = 'websocket'
+
 import asyncio
 import yaml
 from pathlib import Path
