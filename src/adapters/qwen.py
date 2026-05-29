@@ -168,19 +168,77 @@ class QwenAdapter(BaseAdapter):
     
     async def _get_answer(self) -> str:
         try:
-            answer_selector = ".message-content"
-            await self.page.wait_for_selector(answer_selector, timeout=15000)
-            answer_elements = await self.page.query_selector_all(answer_selector)
+            # 定义多种可能的回答选择器
+            answer_selectors = [
+                ".message-content",
+                ".answer-content",
+                ".response-content",
+                ".chat-message",
+                ".assistant-message",
+                "[role='listitem']",
+                ".message-body",
+                ".markdown-body",
+                ".prose",
+                ".content",
+                ".qwen-answer",
+                ".ant-list-item",
+                ".chat-history-item",
+                ".msg-content",
+                ".reply-content",
+            ]
             
-            if answer_elements:
-                last_answer = answer_elements[-1]
-                answer = await last_answer.inner_text()
-                return answer.strip()
+            # 等待最多60秒
+            max_wait_time = 60
+            wait_interval = 1
             
-            return "未找到回答"
+            for _ in range(max_wait_time // wait_interval):
+                for selector in answer_selectors:
+                    try:
+                        answer_elements = await self.page.query_selector_all(selector)
+                        if answer_elements and len(answer_elements) > 0:
+                            last_answer = answer_elements[-1]
+                            is_visible = await last_answer.is_visible()
+                            if is_visible:
+                                answer = await last_answer.inner_text()
+                                if answer and len(answer.strip()) > 10:
+                                    logger.info(f"千问成功获取回答: {answer[:30]}...")
+                                    return answer.strip()
+                    except:
+                        continue
+                
+                # 检查是否正在加载
+                try:
+                    loading_elements = await self.page.query_selector_all(".loading, .typing, span:has-text('正在')")
+                    is_loading = any(await elem.is_visible() for elem in loading_elements) if loading_elements else False
+                    if not is_loading:
+                        # 如果没有加载指示器，尝试检查输入框是否可用
+                        textarea = await self.page.query_selector("textarea")
+                        if textarea:
+                            is_disabled = await textarea.get_attribute("disabled")
+                            if is_disabled is None:
+                                # 输入框可用，说明回复可能已完成
+                                for selector in answer_selectors:
+                                    try:
+                                        answer_elements = await self.page.query_selector_all(selector)
+                                        if answer_elements and len(answer_elements) > 0:
+                                            last_answer = answer_elements[-1]
+                                            answer = await last_answer.inner_text()
+                                            if answer and len(answer.strip()) > 10:
+                                                logger.info(f"千问成功获取回答: {answer[:30]}...")
+                                                return answer.strip()
+                                    except:
+                                        continue
+                except:
+                    pass
+                
+                await self.page.wait_for_timeout(wait_interval * 1000)
+            
+            logger.warning("千问等待回答超时")
+            return "未获取到回答"
+            
         except Exception as e:
             logger.error(f"千问获取回答失败：{str(e)}")
-            return "获取回答失败"
+            return f"获取回答失败：{str(e)}"
     
     async def screenshot(self, question: Question, answer: str) -> tuple[Optional[str], bool]:
         if self.page is None:

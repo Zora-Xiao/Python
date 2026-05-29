@@ -320,7 +320,9 @@ class BaseAdapter(ABC):
     async def _check_if_logged_in_with_input(self) -> bool:
         """通过检测聊天输入框是否可用来判断是否已登录（排除登录页面的输入框）"""
         try:
-            # 先检查是否在登录页面（有登录按钮）
+            await self.page.wait_for_timeout(1000)
+            
+            # 先检查是否在登录页面（有登录按钮或密码输入框）
             login_indicators = [
                 "button:has-text('登录')",
                 "button:has-text('Login')",
@@ -328,18 +330,31 @@ class BaseAdapter(ABC):
                 "[placeholder*='密码']",
                 "[placeholder*='username']",
                 "[placeholder*='password']",
-                "input[type='password']"
+                "input[type='password']",
+                "button[type='submit']",
+                "form"
             ]
+            
+            has_login_indicator = False
             for selector in login_indicators:
                 try:
                     elems = await self.page.query_selector_all(selector)
                     if elems:
                         for elem in elems:
                             if await elem.is_visible():
+                                has_login_indicator = True
                                 logger.debug(f"{self.name}检测到登录页面元素: {selector}")
-                                return False  # 仍在登录页面，未登录
-                except:
+                                break
+                        if has_login_indicator:
+                            break
+                except Exception as e:
+                    logger.debug(f"{self.name}检查登录指示器失败: {str(e)}")
                     continue
+            
+            # 如果检测到登录页面元素，判定为未登录
+            if has_login_indicator:
+                logger.debug(f"{self.name}检测到登录页面，判定为未登录")
+                return False
             
             # 再检查聊天输入框（已登录状态）
             chat_input_selectors = [
@@ -347,8 +362,12 @@ class BaseAdapter(ABC):
                 "[role='textbox']",
                 "[contenteditable='true']",
                 ".chat-input",
-                ".message-input"
+                ".message-input",
+                "textarea[placeholder*='输入']",
+                "textarea[placeholder*='提问']",
+                "textarea[placeholder*='Message']",
             ]
+            
             for selector in chat_input_selectors:
                 try:
                     elems = await self.page.query_selector_all(selector)
@@ -357,12 +376,9 @@ class BaseAdapter(ABC):
                             if await elem.is_visible():
                                 # 检查这个输入框是否是聊天输入框（不是登录输入框）
                                 placeholder = await self.page.evaluate('(el) => el.placeholder || ""', elem)
-                                if placeholder and ('登录' not in placeholder and '密码' not in placeholder and 'username' not in placeholder.lower() and 'password' not in placeholder.lower()):
-                                    logger.debug(f"{self.name}检测到聊天输入框: {selector}, placeholder: {placeholder}")
-                                    return True
-                                elif not placeholder:
-                                    # 没有placeholder的输入框更可能是聊天输入框
-                                    logger.debug(f"{self.name}检测到可见输入框（无placeholder，判定为已登录）")
+                                # 如果没有登录页面的特征，且有输入框，则判定为已登录
+                                if not has_login_indicator:
+                                    logger.info(f"{self.name}检测到聊天输入框，判定为已登录")
                                     return True
                 except Exception as e:
                     logger.debug(f"{self.name}检查输入框 {selector} 失败: {str(e)}")

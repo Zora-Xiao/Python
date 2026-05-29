@@ -163,19 +163,19 @@ class DeepseekAdapter(BaseAdapter):
     async def _send_message(self, question: str) -> None:
         try:
             # 增加等待时间，确保页面完全加载
-            await self.page.wait_for_timeout(2000)
+            await self.page.wait_for_timeout(3000)
             
             input_selectors = [
-                "textarea[placeholder*='输入']",
-                "textarea[placeholder*='提问']",
+                # Deepseek特定选择器
+                "textarea.ds-textarea",
+                "textarea[class*='textarea']",
+                "textarea[placeholder*='输入问题']",
+                "textarea[placeholder*='输入消息']",
                 "textarea[placeholder*='Message']",
-                "textarea[placeholder*='ask']",
-                "textarea[placeholder*='Send']",
-                "textarea[placeholder*='AI']",
+                "textarea[placeholder*='Ask']",
+                # 通用选择器
                 "textarea",
                 "input[type='text']",
-                "input[placeholder*='输入']",
-                "input[placeholder*='提问']",
                 "div[contenteditable='true']",
                 "[contenteditable='true']",
                 "[role='textbox']",
@@ -185,42 +185,64 @@ class DeepseekAdapter(BaseAdapter):
                 "[data-testid*='input']",
                 ".ds-input",
                 "[class*='input']",
-                # 新增更多选择器
-                "[class*='textarea']",
                 ".message-input",
                 ".prompt-input",
                 ".ask-input",
-                "[placeholder*='输入']",
-                "[placeholder*='提问']"
             ]
             
             input_selector = None
+            found_element = None
+            
             for selector in input_selectors:
                 try:
-                    await self.page.wait_for_selector(selector, timeout=5000)
-                    # 检查元素是否可见
-                    element = await self.page.query_selector(selector)
-                    if element:
-                        is_visible = await element.is_visible()
-                        if is_visible:
-                            input_selector = selector
+                    elements = await self.page.query_selector_all(selector)
+                    if elements and len(elements) > 0:
+                        for elem in elements:
+                            is_visible = await elem.is_visible()
+                            if is_visible:
+                                input_selector = selector
+                                found_element = elem
+                                logger.info(f"Deepseek 找到可见输入框: {selector}")
+                                break
+                        if found_element:
                             break
-                except:
+                except Exception as e:
+                    logger.debug(f"Deepseek 检查选择器 {selector} 失败: {str(e)}")
                     continue
             
-            if not input_selector:
+            if not found_element:
                 # 尝试打印页面上所有可能的输入元素进行调试
                 try:
                     elements = await self.page.query_selector_all("textarea, input[type='text'], [contenteditable]")
                     logger.info(f"Deepseek 页面上找到 {len(elements)} 个潜在输入元素")
-                except:
-                    pass
+                    for i, elem in enumerate(elements):
+                        try:
+                            tag_name = await elem.evaluate("el => el.tagName")
+                            placeholder = await elem.get_attribute("placeholder") or ""
+                            class_name = await elem.get_attribute("class") or ""
+                            is_vis = await elem.is_visible()
+                            logger.info(f"  元素{i}: {tag_name}, visible={is_vis}, placeholder={placeholder[:30]}, class={class_name[:50]}")
+                        except:
+                            pass
+                except Exception as e:
+                    logger.info(f"Deepseek 调试信息获取失败: {str(e)}")
                 raise Exception("未找到输入框")
             
-            await self.page.click(input_selector)
+            logger.info(f"Deepseek 准备输入消息")
+            await found_element.click()
             await self.page.wait_for_timeout(500)
-            await self.page.fill(input_selector, question)
+            
+            # 使用fill方法填充文本
+            try:
+                await self.page.fill(input_selector, question)
+            except:
+                # 如果fill失败，尝试使用type方法
+                logger.info("Deepseek fill方法失败，尝试使用type方法")
+                await found_element.type(question)
+            
             await self.page.wait_for_timeout(500)
+            
+            # 尝试按Enter发送
             await self.page.press(input_selector, "Enter")
             
             logger.info(f"Deepseek 成功发送消息：{question[:30]}...")
@@ -231,19 +253,79 @@ class DeepseekAdapter(BaseAdapter):
     
     async def _get_answer(self) -> str:
         try:
-            answer_selector = ".message-content"
-            await self.page.wait_for_selector(answer_selector, timeout=15000)
-            answer_elements = await self.page.query_selector_all(answer_selector)
+            # 定义多种可能的回答选择器
+            answer_selectors = [
+                ".message-content",
+                ".answer-content",
+                ".response-content",
+                ".chat-message",
+                ".assistant-message",
+                "[role='listitem']",
+                ".message-body",
+                ".markdown-body",
+                ".prose",
+                ".content",
+                ".ds-message-content",
+                ".deepseek-answer",
+                ".msg-content",
+                ".reply-content",
+                "div[class*='message']",
+                "div[class*='answer']",
+            ]
             
-            if answer_elements:
-                last_answer = answer_elements[-1]
-                answer = await last_answer.inner_text()
-                return answer.strip()
+            # 等待最多60秒
+            max_wait_time = 60
+            wait_interval = 1
             
-            return "未找到回答"
+            for _ in range(max_wait_time // wait_interval):
+                for selector in answer_selectors:
+                    try:
+                        answer_elements = await self.page.query_selector_all(selector)
+                        if answer_elements and len(answer_elements) > 0:
+                            last_answer = answer_elements[-1]
+                            is_visible = await last_answer.is_visible()
+                            if is_visible:
+                                answer = await last_answer.inner_text()
+                                if answer and len(answer.strip()) > 10:
+                                    logger.info(f"Deepseek成功获取回答: {answer[:30]}...")
+                                    return answer.strip()
+                    except Exception as e:
+                        logger.debug(f"Deepseek 检查选择器 {selector} 失败: {str(e)}")
+                        continue
+                
+                # 检查是否正在加载
+                try:
+                    loading_elements = await self.page.query_selector_all(".loading, .typing, span:has-text('正在'), span:has-text('思考')")
+                    is_loading = any(await elem.is_visible() for elem in loading_elements) if loading_elements else False
+                    if not is_loading:
+                        # 如果没有加载指示器，尝试检查输入框是否可用
+                        textarea = await self.page.query_selector("textarea")
+                        if textarea:
+                            is_disabled = await textarea.get_attribute("disabled")
+                            if is_disabled is None:
+                                # 输入框可用，说明回复可能已完成
+                                for selector in answer_selectors:
+                                    try:
+                                        answer_elements = await self.page.query_selector_all(selector)
+                                        if answer_elements and len(answer_elements) > 0:
+                                            last_answer = answer_elements[-1]
+                                            answer = await last_answer.inner_text()
+                                            if answer and len(answer.strip()) > 10:
+                                                logger.info(f"Deepseek成功获取回答: {answer[:30]}...")
+                                                return answer.strip()
+                                    except:
+                                        continue
+                except:
+                    pass
+                
+                await self.page.wait_for_timeout(wait_interval * 1000)
+            
+            logger.warning("Deepseek等待回答超时")
+            return "未获取到回答"
+            
         except Exception as e:
-            logger.error(f"Deepseek 获取回答失败：{str(e)}")
-            return "获取回答失败"
+            logger.error(f"Deepseek获取回答失败：{str(e)}")
+            return f"获取回答失败：{str(e)}"
     
     async def screenshot(self, question: Question, answer: str) -> tuple[Optional[str], bool, Optional[str]]:
         if self.page is None:
