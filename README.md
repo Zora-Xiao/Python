@@ -149,13 +149,13 @@ rate_limit:
 ### 基本使用（浏览器自动化模式）
 
 ```bash
-python main.py
+python main.py config.yaml sequential
 ```
 
-**首次运行说明**：
-- 浏览器会自动打开
-- 需要手动登录各个 AI 平台
-- 登录成功后，后续运行会自动使用保存的 Cookie
+**运行说明**：
+- **DeepSeek**：程序会自动登录（需配置 username 和 password），不保存 Cookie，每次运行都重新登录
+- **其他平台**：首次运行需要手动登录生成 Cookie，后续运行会自动验证 Cookie 有效性
+- 如果 Cookie 验证失败，程序会等待手动重新登录
 
 ### 指定配置文件
 
@@ -218,11 +218,23 @@ pattern: "(推荐 | 建议).*(使用 | 采用 | 选择)"
 
 ### 浏览器自动化模式
 
-**首次运行**：
+#### DeepSeek 平台（自动登录）
+- 程序启动时自动完成登录
+- 需要在 `config.yaml` 中配置 `username` 和 `password`
+- 无需手动登录，自动化程度高
+- 不保存 Cookie，每次运行都重新登录
+
+#### 其他平台（手动登录生成 Cookie）
+- 首次运行时需要手动登录
+- 登录成功后 Cookie 会自动保存
+- 后续运行会验证 Cookie 有效性
+- 如果 Cookie 验证失败，会等待手动重新登录
+
+**首次运行流程**：
 1. 程序会自动打开浏览器
 2. 手动登录到各个 AI 平台
 3. 浏览器会保存 Cookie 和登录状态
-4. 后续运行会自动使用保存的登录状态
+4. 后续运行会验证 Cookie 有效性
 
 **支持的平台**：
 - 豆包：https://www.doubao.com/chat/
@@ -230,6 +242,27 @@ pattern: "(推荐 | 建议).*(使用 | 采用 | 选择)"
 - 千问：https://chat.qwen.ai/
 - 文心一言：https://yiyan.baidu.com/
 - Deepseek：https://chat.deepseek.com/
+
+**平台登录配置示例**：
+
+```yaml
+platforms:
+  # 手动登录平台
+  doubao:
+    enabled: true
+    cookies_path: "cookies/doubao_cookies.json"
+  
+  yuanbao:
+    enabled: true
+    cookies_path: "cookies/yuanbao_cookies.json"
+  
+  # 自动登录平台（需要配置账号密码）
+  deepseek:
+    enabled: true
+    cookies_path: "cookies/deepseek_cookies.json"
+    username: "your_email@example.com"
+    password: "your_password"
+```
 
 ### API 模式（可选）
 

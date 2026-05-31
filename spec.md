@@ -20,6 +20,11 @@
 ## 3. 核心流程
 1. 读取 config.yaml → 问题列表、规则、平台配置
 2. 初始化各平台适配器（API/Playwright）
+
+### 登录方式
+- **DeepSeek**：自动登录（需配置 username/password），不保存 Cookie，每次运行都重新登录
+- **其他平台（豆包、元宝、千问、文心）**：手动登录生成 Cookie，Cookie 验证失败时自动等待手动重新登录
+
 3. 并发调度：对每个问题，依次/错开发送到选中平台（支持顺序处理模式）
 4. 每个平台：发送问题 → 等待回复完成 → 获取回答 → 截图 → 返回结果
    - **截图流程**（豆包平台）：
@@ -35,15 +40,42 @@
      - 第三步：点击"复制链接"按钮（button:has-text('复制链接')），并保存链接到文本文件
      - 失败回退：若分享链接失败，仅保留页面截图
    - **截图流程**（Deepseek平台）：
-     - 等待AI回复完成（检测输入框可用或回复内容已渲染）
-     - 第一步：页面全屏截图
-     - 第二步：点击分享按钮（SVG图标，width="16" height="16"，包含特定path路径）
-     - 第三步：点击"创建分享链接"按钮（.ds-basic-button--primary）
-     - 第四步：点击"创建并复制"按钮，并保存链接到文本文件
-     - 失败回退：若分享链接失败，仅保留页面截图
+     - 等待AI回复完成（等待3秒确保回答完全加载）
+     - 第一步：页面全屏截图同时点击分享按钮
+       - 先保存页面全屏截图
+       - 点击分享按钮，HTML内容为：div class="db183363 ds-icon-button ds-icon-button--m ds-icon-button--sizing-container" tabindex="0" role="button" aria-disabled="false"
+       - 选择器列表：div.db183363.ds-icon-button.ds-icon-button--m.ds-icon-button--sizing-container, .ds-icon-button[role='button'], div[role='button'][tabindex='0']
+     - 第二步：点击"创建分享链接"按钮
+       - HTML内容为：button role="button" aria-disabled="false" class="ds-atom-button ds-basic-button ds-basic-button--primary"
+       - 选择器列表：button.ds-atom-button.ds-basic-button.ds-basic-button--primary:has-text('创建分享链接'), button:has-text('创建分享链接'), .ds-basic-button--primary:has-text('创建')
+     - 第三步：点击"创建并复制"按钮
+       - 复制链接地址并保存到Excel中
+       - 选择器列表：button:has-text('创建并复制'), button:has-text('复制'), .ds-basic-button--primary:has-text('复制')
+     - 失败回退：若任意步骤失败，使用默认截图方法（页面全屏截图）
+   - **截图流程**（文心一言平台）：
+     - 等待AI回复完成（等待3秒确保回答完全加载）
+     - 第一步：查找并点击分享按钮（SVG元素，class包含"share"）
+       - 选择器列表：div[class*='share'], button[class*='share'], svg[class*='share'], [class*='share-btn'], [class*='share-button'], [data-testid*='share'], .share-icon, button:has(svg[class*='share'])
+     - 第二步：点击"生成图片"按钮
+       - 选择器列表：button:has-text('生成图片'), button:has-text('生成'), [class*='generate'], [class*='image'], [data-testid*='generate']
+       - 等待3秒让图片生成
+     - 第三步：点击"保存图片"按钮
+       - 选择器列表：button:has-text('保存图片'), button:has-text('保存'), [class*='save'], [download], [data-testid*='save']
+     - 失败回退：若任意步骤失败，使用默认截图方法（页面全屏截图）
+   - **截图流程**（元宝平台）：
+     - 等待AI回复完成（等待3秒确保回答完全加载）
+     - 第一步：查找并点击分享按钮（SVG元素，class包含"share"）
+       - 选择器列表：div[class*='share'], button[class*='share'], svg[class*='share'], [class*='share-btn'], [class*='share-button'], [data-testid*='share'], .share-icon, button:has(svg[class*='share'])
+     - 第二步：点击"生成图片"按钮
+       - 选择器列表：button:has-text('生成图片'), button:has-text('生成'), [class*='generate'], [class*='image'], [data-testid*='generate']
+       - 等待3秒让图片生成
+     - 第三步：点击"保存图片"按钮
+       - 选择器列表：button:has-text('保存图片'), button:has-text('保存'), [class*='save'], [download], [data-testid*='save']
+     - 失败回退：若任意步骤失败，使用默认截图方法（页面全屏截图）
 5. 规则引擎：匹配回答 → 输出标签（提及/推荐/推荐并引导）
 6. 结果汇总 → 写入Excel → 嵌入截图
-7. 输出日志与报告文件
+7. 将获取的链接地址单独保存至文本文件（share_links.txt）
+8. 输出日志与报告文件
 
 ## 4. 技术约束
 - 语言：Python 3.11+

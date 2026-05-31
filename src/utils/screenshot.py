@@ -13,11 +13,21 @@ class ScreenshotTool:
         self.screenshot_dir = Path(screenshot_dir)
         self.screenshot_dir.mkdir(parents=True, exist_ok=True)
         self.browser: Optional[Browser] = None
+        self.playwright = None
+
+    async def close(self):
+        """关闭浏览器资源"""
+        if self.browser:
+            await self.browser.close()
+            self.browser = None
+        if self.playwright:
+            await self.playwright.stop()
+            self.playwright = None
 
     async def _get_browser(self) -> Browser:
         if self.browser is None:
-            playwright = await async_playwright().start()
-            self.browser = await playwright.chromium.launch(headless=True)
+            self.playwright = await async_playwright().start()
+            self.browser = await self.playwright.chromium.launch(headless=True)
         return self.browser
 
     async def _wait_for_response_complete(self, page: Page, platform_id: str) -> bool:
@@ -150,7 +160,36 @@ class ScreenshotTool:
             return await self._deepseek_download_shared_image(page, question)
         else:
             return await self._doubao_download_shared_image(page, platform_id, question)
-    
+
+    async def capture_from_page(self, page: Page, platform_id: str, question: Question) -> tuple[Optional[str], bool, Optional[str]]:
+        """截取页面全屏截图并尝试获取分享图片
+
+        Returns:
+            tuple[screenshot_path, is_shared_image, share_link]
+        """
+        try:
+            screenshot_path = self.screenshot_dir / f"{platform_id}_{question.id}_{question.timestamp.strftime('%Y%m%d_%H%M%S')}_full.png"
+
+            await page.wait_for_timeout(2000)
+            await page.screenshot(
+                path=str(screenshot_path),
+                full_page=True,
+                timeout=60000
+            )
+            logger.info(f"{platform_id}全屏截图已保存：{screenshot_path}")
+
+            shared_image_path = await self.download_shared_image(page, platform_id, question)
+            is_shared = shared_image_path is not None
+
+            if is_shared:
+                return shared_image_path, True, None
+            else:
+                return str(screenshot_path), False, None
+
+        except Exception as e:
+            logger.error(f"{platform_id}截图失败：{str(e)}")
+            return None, False, None
+
     async def _doubao_download_shared_image(self, page: Page, platform_id: str, question: Question) -> Optional[str]:
         """豆包平台：三步流程下载分享图片（分享会话 → 分享图片 → 下载图片）"""
         try:
@@ -781,13 +820,13 @@ class ScreenshotTool:
 
             # ========== 第四步：从剪贴板读取分享链接 ==========
             logger.info(f"{platform_id}【第四步】从剪贴板读取分享链接...")
-            
+
             # 重试最多3次，每次间隔1秒，整个步骤最多15秒
             max_total_wait = 15
-            start_time = page.locator("body").evaluate("() => Date.now()")
-            
+            start_time = await page.locator("body").evaluate("() => Date.now()")
+
             for retry in range(3):
-                current_time = page.locator("body").evaluate("() => Date.now()")
+                current_time = await page.locator("body").evaluate("() => Date.now()")
                 elapsed = (current_time - start_time) / 1000
                 if elapsed >= max_total_wait:
                     logger.info(f"{platform_id}【第四步】已达到最大等待时间（{elapsed:.1f}秒），跳过分享链接")
@@ -1068,656 +1107,49 @@ class ScreenshotTool:
             
             # 使用 force=True 强制点击按钮，绕过可能的元素拦截
             await create_link_button.click(force=True)
-            await page.wait_for_timeout(3000)  # 等待分享链接生成
             
-            # 检查是否需要再次点击"复制"按钮（如果是"创建分享链接"按钮而不是"创建并复制"按钮）
-            logger.info(f"{platform_id}【第三步】检查是否需要点击复制按钮...")
-            copy_button = None
-            copy_selectors = [
-                "button:has-text('复制')",
-                "[role='button']:has-text('复制')",
-                ".copy-btn",
-                ".ds-basic-button:has-text('复制')",
-                "[class*='copy']"
-            ]
-            
-            for selector in copy_selectors:
+            # 等待分享链接生成，最多等待10秒，每2秒检查一次
+            logger.info(f"{platform_id}【第三步】等待分享链接生成...")
+            shared_link = None
+            for i in range(5):
+                await page.wait_for_timeout(2000)
+                current_url = await page.evaluate("window.location.href")
+                if 'deepseek.com/share' in current_url:
+                    shared_link = current_url
+                    logger.info(f"{platform_id}【第三步】从URL获取分享链接: {shared_link}")
+                    break
+                
+                # 尝试从剪贴板获取链接
                 try:
-                    copy_button = await page.query_selector(selector)
-                    if copy_button and await copy_button.is_visible():
-                        text = await copy_button.text_content()
-                        logger.info(f"{platform_id}【第三步】找到复制按钮: {selector}, 文本: {text.strip()}")
-                        await copy_button.click(force=True)
-                        await page.wait_for_timeout(2000)
+                    clipboard_content = pyperclip.paste()
+                    if clipboard_content and 'deepseek.com/share' in clipboard_content:
+                        shared_link = clipboard_content.strip()
+                        logger.info(f"{platform_id}【第三步】从剪贴板获取分享链接: {shared_link}")
                         break
                 except:
-                    continue
+                    pass
             
-            # 记录点击后的页面URL
-            after_url = await page.evaluate("window.location.href")
-            logger.info(f"{platform_id}【第三步】点击后页面URL: {after_url}")
-            
-            # 检查URL是否包含分享链接
-            if 'deepseek.com/share' in after_url:
-                shared_link = after_url
-                logger.info(f"{platform_id}【第三步】从页面URL获取分享链接: {shared_link}")
-
-            # ========== 第四步：从剪贴板读取分享链接 ==========
-            logger.info(f"{platform_id}【第四步】从剪贴板读取分享链接...")
-            if not shared_link:
-                shared_link = None
-            
-            # 增加等待后先检查页面变化
-            await page.wait_for_timeout(2000)
-            
-            # 新增：尝试直接从页面中查找包含share的按钮或链接，可能需要再次点击
-            if not shared_link:
-                logger.info(f"{platform_id}【第四步】尝试查找分享链接按钮并点击...")
+            if shared_link:
+                # 保存分享链接到文件
+                share_link_file = self.screenshot_dir / f"{platform_id}_{question.id}_{question.timestamp.strftime('%Y%m%d_%H%M%S')}_link.txt"
                 try:
-                    share_link_buttons = await page.query_selector_all("button:has-text('分享链接'), button:has-text('复制链接'), .copy-link-btn, [data-action*='copy'], button:has-text('复制')")
-                    for btn in share_link_buttons:
-                        if await btn.is_visible():
-                            logger.info(f"{platform_id}【第四步】找到分享链接按钮，点击尝试复制...")
-                            await btn.click()
-                            await page.wait_for_timeout(2000)
-                            break
+                    with open(share_link_file, 'w', encoding='utf-8') as f:
+                        f.write(shared_link)
+                    logger.info(f"{platform_id}【第三步】分享链接已保存到: {share_link_file}")
                 except Exception as e:
-                    logger.info(f"{platform_id}【第四步】查找分享链接按钮失败: {str(e)}")
-            
-            # 新增：检查页面上所有可见的按钮，获取它们的文本内容用于调试
-            if not shared_link:
-                logger.info(f"{platform_id}【第四步】调试：获取页面上所有可见按钮的文本...")
-                try:
-                    all_buttons = await page.query_selector_all("button")
-                    button_texts = []
-                    for btn in all_buttons:
-                        try:
-                            if await btn.is_visible():
-                                text = await btn.inner_text()
-                                if text and len(text.strip()) > 0:
-                                    button_texts.append(text.strip())
-                        except:
-                            continue
-                    logger.info(f"{platform_id}【第四步】页面上可见按钮文本: {button_texts[:20]}")
-                except Exception as e:
-                    logger.info(f"{platform_id}【第四步】获取按钮文本失败: {str(e)}")
-            
-            # 首先尝试从弹窗或提示信息中提取分享链接
-            logger.info(f"{platform_id}【第四步】尝试从弹窗内容提取分享链接...")
-            
-            # 增加更多选择器来查找分享链接元素
-            try:
-                # 尝试查找包含分享链接的输入框或文本元素
-                link_input_selectors = [
-                    "input[value*='deepseek.com']",
-                    "textarea[value*='deepseek.com']",
-                    "div[contenteditable='true']",
-                    "[data-testid*='share']",
-                    "[aria-label*='分享']",
-                    "div[class*='share-link']",
-                    "input[class*='share']",
-                ]
-                for selector in link_input_selectors:
-                    try:
-                        element = await page.query_selector(selector)
-                        if element and await element.is_visible():
-                            value = await element.get_attribute('value')
-                            if value and 'deepseek.com/share' in value:
-                                shared_link = value.strip()
-                                logger.info(f"{platform_id}【第四步】从输入框找到分享链接: {shared_link}")
-                                break
-                            text = await element.text_content()
-                            if text and 'deepseek.com/share' in text:
-                                shared_link = text.strip()
-                                logger.info(f"{platform_id}【第四步】从文本内容找到分享链接: {shared_link}")
-                                break
-                    except:
-                        continue
-            except Exception as e:
-                logger.info(f"{platform_id}【第四步】额外选择器查找失败: {str(e)}")
-            try:
-                popup_selectors = [
-                    "[class*='popup'] [class*='link']",
-                    "[class*='modal'] [class*='link']",
-                    "[class*='dialog'] [class*='link']",
-                    "[class*='share'] [class*='link']",
-                    "[class*='copy'] [class*='link']",
-                    "div[class*='link']",
-                    "span[class*='link']",
-                    "p[class*='link']",
-                    "[class*='result'] [class*='link']",
-                    "[class*='success'] [class*='link']",
-                    "div[class*='share']",
-                ]
+                    logger.info(f"{platform_id}【第三步】保存分享链接失败: {str(e)}")
                 
-                for selector in popup_selectors:
-                    try:
-                        elements = await page.query_selector_all(selector)
-                        for elem in elements:
-                            try:
-                                if await elem.is_visible():
-                                    text = await elem.inner_text()
-                                    if text and 'deepseek.com/share' in text:
-                                        import re
-                                        match = re.search(r'https://[^\s]*deepseek\.com/share[^\s]*', text)
-                                        if match:
-                                            shared_link = match.group(0).strip()
-                                            logger.info(f"{platform_id}【第四步】从弹窗元素找到分享链接: {shared_link}")
-                                            break
-                                    if not shared_link:
-                                        href = await elem.get_attribute('href')
-                                        if href and 'deepseek.com/share' in href:
-                                            shared_link = href.strip()
-                                            logger.info(f"{platform_id}【第四步】从弹窗链接找到分享链接: {shared_link}")
-                                            break
-                            except:
-                                continue
-                        if shared_link:
-                            break
-                    except:
-                        continue
-            except Exception as popup_e:
-                logger.info(f"{platform_id}【第四步】从弹窗提取链接失败: {str(popup_e)}")
-            
-            # 尝试使用JavaScript获取分享链接（直接从页面DOM中提取）
-            if not shared_link or not shared_link.strip():
-                logger.info(f"{platform_id}【第四步】尝试使用JavaScript提取分享链接...")
-                try:
-                    js_code = "var text = document.body.innerText; var match = text.match(/https:\\/\\/[^\\s]*deepseek\\.com\\/share[^\\s]*/); match ? match[0] : null;"
-                    import asyncio
-                    js_result = await asyncio.wait_for(page.evaluate(js_code), timeout=10.0)
-                    if js_result and 'deepseek.com/share' in js_result:
-                        shared_link = js_result.strip()
-                        logger.info(f"{platform_id}【第四步】使用JavaScript从页面提取到分享链接: {shared_link}")
-                    else:
-                        logger.info(f"{platform_id}【第四步】JavaScript未提取到分享链接")
-                except asyncio.TimeoutError:
-                    logger.info(f"{platform_id}【第四步】JavaScript提取链接超时（10秒）")
-                except Exception as js_e:
-                    logger.info(f"{platform_id}【第四步】JavaScript提取链接失败: {str(js_e)}")
-            
-            # 新增备选方案：尝试从页面中所有包含deepseek.com的元素中提取链接
-            if not shared_link or not shared_link.strip():
-                logger.info(f"{platform_id}【第四步】尝试从页面所有包含deepseek.com的元素提取链接...")
-                try:
-                    all_elements = await page.query_selector_all("*")
-                    for elem in all_elements:
-                        try:
-                            text = await elem.text_content()
-                            if text and 'deepseek.com/share' in text:
-                                import re
-                                match = re.search(r'https://[^\s]*deepseek\.com/share[^\s]*', text)
-                                if match:
-                                    shared_link = match.group(0).strip()
-                                    logger.info(f"{platform_id}【第四步】从页面元素文本提取分享链接: {shared_link}")
-                                    break
-                            if not shared_link:
-                                href = await elem.get_attribute('href')
-                                if href and 'deepseek.com/share' in href:
-                                    shared_link = href.strip()
-                                    logger.info(f"{platform_id}【第四步】从页面元素href提取分享链接: {shared_link}")
-                                    break
-                            if not shared_link:
-                                value = await elem.get_attribute('value')
-                                if value and 'deepseek.com/share' in value:
-                                    shared_link = value.strip()
-                                    logger.info(f"{platform_id}【第四步】从页面元素value提取分享链接: {shared_link}")
-                                    break
-                        except:
-                            continue
-                except Exception as e:
-                    logger.info(f"{platform_id}【第四步】遍历页面元素提取链接失败: {str(e)}")
-            
-            # 尝试剪贴板读取（使用Playwright执行navigator.clipboard.readText()）
-            if not shared_link or not shared_link.strip():
-                try:
-                    import re
-                    link_pattern = r'https://[^\s]*deepseek\.com/share[^\s]*'
-                    # 重试最多3次，每次间隔1秒
-                    for retry in range(3):
-                        await page.wait_for_timeout(1000)
-                        # 先尝试使用Playwright的evaluate执行navigator.clipboard.readText()
-                        try:
-                            clipboard_content = await page.evaluate("navigator.clipboard.readText()")
-                            if clipboard_content and clipboard_content.strip():
-                                match = re.search(link_pattern, clipboard_content)
-                                if match:
-                                    shared_link = match.group(0).strip()
-                                    logger.info(f"{platform_id}【第四步】第{retry+1}次尝试，使用navigator.clipboard读取成功: {shared_link}")
-                                    break
-                                else:
-                                    logger.info(f"{platform_id}【第四步】第{retry+1}次尝试，剪贴板内容不是有效分享链接: {clipboard_content[:50]}...")
-                            else:
-                                logger.info(f"{platform_id}【第四步】第{retry+1}次尝试，navigator.clipboard返回为空")
-                        except Exception as nav_e:
-                            # 如果navigator.clipboard失败，尝试使用pyperclip
-                            logger.info(f"{platform_id}【第四步】第{retry+1}次尝试，navigator.clipboard失败: {str(nav_e)}")
-                            clipboard_content = pyperclip.paste()
-                            if clipboard_content and clipboard_content.strip():
-                                match = re.search(link_pattern, clipboard_content)
-                                if match:
-                                    shared_link = match.group(0).strip()
-                                    logger.info(f"{platform_id}【第四步】第{retry+1}次尝试，使用pyperclip从系统剪贴板读取成功: {shared_link}")
-                                    break
-                                else:
-                                    logger.info(f"{platform_id}【第四步】第{retry+1}次尝试，pyperclip内容不是有效分享链接: {clipboard_content[:50]}...")
-                            else:
-                                logger.info(f"{platform_id}【第四步】第{retry+1}次尝试，pyperclip剪贴板为空")
-                except Exception as e:
-                    logger.info(f"{platform_id}【第四步】使用剪贴板获取失败: {str(e)}")
-            
-            # 保存分享链接到文件
-            if shared_link and shared_link.strip():
-                link_path = self.screenshot_dir / f"{platform_id}_{question.id}_{question.timestamp.strftime('%Y%m%d_%H%M%S')}_link.txt"
-                with open(link_path, 'w', encoding='utf-8') as f:
-                    f.write(shared_link.strip())
-                logger.info(f"{platform_id}【第四步】分享链接已保存：{link_path}")
-                logger.info(f"{platform_id}【第四步】分享链接内容: {shared_link.strip()}")
-            
-            # 备选方案：如果剪贴板失败，尝试从页面中提取分享链接
-            if not shared_link or not shared_link.strip():
-                logger.info(f"{platform_id}【第四步】尝试从页面提取分享链接...")
-                try:
-                    page_content = await page.content()
-                    import re
-                    url_patterns = [
-                        r'https://chat\.deepseek\.com/share/[\w-]+',
-                        r'https://share\.deepseek\.com/[\w-]+',
-                        r'https?://[^\s"\'<>]+/share/[\w-]+',
-                        r'"(https://chat\.deepseek\.com[^"]+)"',
-                        r"'(https://chat\.deepseek\.com[^']+)'",
-                    ]
-                    for pattern in url_patterns:
-                        match = re.search(pattern, page_content)
-                        if match:
-                            shared_link = match.group(0).strip('\'"')
-                            logger.info(f"{platform_id}【第四步】从页面内容提取分享链接: {shared_link}")
-                            break
-                except Exception as extract_e:
-                    logger.info(f"{platform_id}【第四步】从页面内容提取链接失败: {str(extract_e)}")
-            
-            # 备选方案2：尝试从更多DOM元素获取（增强版）
-            if not shared_link or not shared_link.strip():
-                logger.info(f"{platform_id}【第四步】尝试从更多DOM元素提取分享链接...")
-                try:
-                    share_elements = await page.query_selector_all("[class*='share'], [id*='share'], [data-testid*='share'], [aria-label*='share']")
-                    for elem in share_elements:
-                        try:
-                            if await elem.is_visible():
-                                text = await elem.inner_text()
-                                if text and 'deepseek.com/share' in text:
-                                    import re
-                                    match = re.search(r'https://[^\s]*deepseek\.com/share[^\s]*', text)
-                                    if match:
-                                        shared_link = match.group(0).strip()
-                                        logger.info(f"{platform_id}【第四步】从share元素文本提取分享链接: {shared_link}")
-                                        break
-                                
-                                if not shared_link:
-                                    href = await elem.get_attribute('href')
-                                    if href and 'deepseek.com/share' in href:
-                                        shared_link = href.strip()
-                                        logger.info(f"{platform_id}【第四步】从share元素href提取分享链接: {shared_link}")
-                                        break
-                                
-                                if not shared_link:
-                                    value = await elem.get_attribute('value')
-                                    if value and 'deepseek.com/share' in value:
-                                        shared_link = value.strip()
-                                        logger.info(f"{platform_id}【第四步】从share元素value提取分享链接: {shared_link}")
-                                        break
-                                
-                                if not shared_link:
-                                    child_inputs = await elem.query_selector_all("input, textarea")
-                                    for child in child_inputs:
-                                        child_value = await child.get_attribute('value')
-                                        if child_value and 'deepseek.com/share' in child_value:
-                                            shared_link = child_value.strip()
-                                            logger.info(f"{platform_id}【第四步】从share元素子输入框提取分享链接: {shared_link}")
-                                            break
-                        except:
-                            continue
-                    if shared_link:
-                        logger.info(f"{platform_id}【第四步】已找到分享链接，跳过后续提取尝试")
-                except Exception as e:
-                    logger.info(f"{platform_id}【第四步】从share元素提取链接失败: {str(e)}")
-            
-            # 备选方案3：尝试从弹窗中的代码块或pre标签获取
-            if not shared_link or not shared_link.strip():
-                logger.info(f"{platform_id}【第四步】尝试从代码块提取分享链接...")
-                try:
-                    code_selectors = ["pre", "code", ".code-block", "[class*='code']", "[class*='pre']"]
-                    for selector in code_selectors:
-                        elements = await page.query_selector_all(selector)
-                        for elem in elements:
-                            try:
-                                if await elem.is_visible():
-                                    text = await elem.inner_text()
-                                    if text and 'deepseek.com/share' in text:
-                                        import re
-                                        match = re.search(r'https://[^\s]*deepseek\.com/share[^\s]*', text)
-                                        if match:
-                                            shared_link = match.group(0).strip()
-                                            logger.info(f"{platform_id}【第四步】从代码块提取分享链接: {shared_link}")
-                                            break
-                            except:
-                                continue
-                        if shared_link:
-                            break
-                except Exception as e:
-                    logger.info(f"{platform_id}【第四步】从代码块提取链接失败: {str(e)}")
-            
-            # 备选方案4：尝试使用更强大的JavaScript提取
-            if not shared_link or not shared_link.strip():
-                logger.info(f"{platform_id}【第四步】尝试使用增强版JavaScript提取分享链接...")
-                try:
-                    enhanced_js_code = """
-                    (function() {
-                        var link = null;
-                        var allElements = document.querySelectorAll('*');
-                        for(var i = 0; i < allElements.length; i++) {
-                            var elem = allElements[i];
-                            var text = elem.textContent || elem.innerText || '';
-                            if(text.indexOf('deepseek.com/share') !== -1) {
-                                var match = text.match(/https:\\/\\/[^\\s]*deepseek\\.com\\/share[^\\s]*/);
-                                if(match) {
-                                    link = match[0];
-                                    break;
-                                }
-                            }
-                            if(!link && elem.href && elem.href.indexOf('deepseek.com/share') !== -1) {
-                                link = elem.href;
-                                break;
-                            }
-                            if(!link && elem.value && elem.value.indexOf('deepseek.com/share') !== -1) {
-                                link = elem.value;
-                                break;
-                            }
-                        }
-                        return link;
-                    })();
-                    """
-                    import asyncio
-                    js_result = await asyncio.wait_for(page.evaluate(enhanced_js_code), timeout=15.0)
-                    if js_result and 'deepseek.com/share' in js_result:
-                        shared_link = js_result.strip()
-                        logger.info(f"{platform_id}【第四步】使用增强版JavaScript提取到分享链接: {shared_link}")
-                    else:
-                        logger.info(f"{platform_id}【第四步】增强版JavaScript未提取到分享链接")
-                except asyncio.TimeoutError:
-                    logger.info(f"{platform_id}【第四步】增强版JavaScript提取链接超时（15秒）")
-                except Exception as e:
-                    logger.info(f"{platform_id}【第四步】增强版JavaScript提取链接失败: {str(e)}")
-            
-            # 备选方案2：尝试从输入框或文本区域获取
-            if not shared_link or not shared_link.strip():
-                try:
-                    input_selectors = [
-                        "input[value*='deepseek.com/share']",
-                        "textarea[value*='deepseek.com/share']",
-                        "input[placeholder*='分享']",
-                        "textarea[placeholder*='分享']",
-                        "input[type='text']",
-                        "textarea",
-                    ]
-                    for selector in input_selectors:
-                        try:
-                            element = await page.query_selector(selector)
-                            if element:
-                                value = await element.get_attribute('value')
-                                if value and 'deepseek.com/share' in value:
-                                    shared_link = value.strip()
-                                    logger.info(f"{platform_id}【第四步】从输入框value提取分享链接: {shared_link}")
-                                    break
-                                text = await element.text_content()
-                                if text and 'deepseek.com/share' in text:
-                                    shared_link = text.strip()
-                                    logger.info(f"{platform_id}【第四步】从输入框text提取分享链接: {shared_link}")
-                                    break
-                        except:
-                            continue
-                except Exception as extract_e:
-                    logger.info(f"{platform_id}【第四步】从输入框提取链接失败: {str(extract_e)}")
-            
-            # 备选方案3：尝试执行JavaScript获取可能存在的分享链接变量
-            if not shared_link or not shared_link.strip():
-                try:
-                    shared_link = await page.evaluate("""
-                        // 尝试从全局变量或DOM中获取分享链接
-                        function findShareLink() {
-                            // 检查常见的分享链接存储位置
-                            const possibleVars = ['shareUrl', 'shareLink', 'sharedLink', 'link', 'url'];
-                            for (const varName of possibleVars) {
-                                if (window[varName] && typeof window[varName] === 'string' && window[varName].includes('deepseek')) {
-                                    return window[varName];
-                                }
-                            }
-                            // 检查meta标签
-                            const metaTags = document.querySelectorAll('meta[property*="url"], meta[name*="url"], meta[content*="deepseek"]');
-                            for (const tag of metaTags) {
-                                const content = tag.getAttribute('content');
-                                if (content && content.includes('deepseek.com/share')) {
-                                    return content;
-                                }
-                            }
-                            return null;
-                        }
-                        findShareLink();
-                    """)
-                    
-                    if shared_link:
-                        link_path = self.screenshot_dir / f"{platform_id}_{question.id}_{question.timestamp.strftime('%Y%m%d_%H%M%S')}_link.txt"
-                        with open(link_path, 'w', encoding='utf-8') as f:
-                            f.write(shared_link)
-                        logger.info(f"{platform_id}【第四步】从JS变量提取分享链接: {shared_link}")
-                except Exception as extract_e:
-                    logger.info(f"{platform_id}【第四步】从JS变量提取链接失败: {str(extract_e)}")
-
-            await page.keyboard.press("Escape")
-            logger.info(f"{platform_id}四步分享流程完成")
-            return str(download_path)
-
-        except Exception as e:
-            logger.error(f"{platform_id}下载分享图片失败：{str(e)}")
-            try:
+                # 关闭弹窗
                 await page.keyboard.press("Escape")
-            except:
-                pass
-            return None
-
-    async def capture_from_page(self, page: Page, platform_id: str, question: Question) -> tuple[Optional[str], bool, Optional[str]]:
-        """
-        优先尝试下载分享图片，如果失败则进行页面截图
-        返回：(图片路径, 是否为分享图片, 分享链接)
-        """
-        logger.info(f"{platform_id}开始等待AI回复完成...")
-        await self._wait_for_response_complete(page, platform_id)
-        logger.info(f"{platform_id}等待完成，开始尝试三步分享流程...")
-
-        shared_image_path = await self.download_shared_image(page, platform_id, question)
+                await page.wait_for_timeout(1000)
+                return str(download_path)
+            
+            # 如果还没获取到链接，返回截图路径
+            logger.info(f"{platform_id}【第三步】未能获取分享链接，返回截图路径")
+            await page.keyboard.press("Escape")
+            await page.wait_for_timeout(1000)
+            return str(download_path)
         
-        # 尝试读取分享链接
-        share_link_path = self.screenshot_dir / f"{platform_id}_{question.id}_{question.timestamp.strftime('%Y%m%d_%H%M%S')}_link.txt"
-        share_link = None
-        if share_link_path.exists():
-            try:
-                with open(share_link_path, 'r', encoding='utf-8') as f:
-                    share_link = f.read().strip()
-                    logger.info(f"{platform_id}读取到分享链接: {share_link}")
-            except Exception as e:
-                logger.info(f"{platform_id}读取分享链接失败: {str(e)}")
-        
-        if shared_image_path:
-            return shared_image_path, True, share_link
-
-        for attempt in range(3):
-            try:
-                filename = f"{platform_id}_{question.id}_{question.timestamp.strftime('%Y%m%d_%H%M%S')}.png"
-                filepath = self.screenshot_dir / filename
-
-                await page.wait_for_timeout(2000)
-                await page.screenshot(
-                    path=str(filepath),
-                    full_page=True,
-                    timeout=60000
-                )
-
-                logger.info(f"{platform_id}页面截图已保存：{filepath}")
-                return str(filepath), False, share_link
-
-            except Exception as e:
-                error_msg = str(e)
-                if "closed" in error_msg.lower() or "target page" in error_msg.lower():
-                    logger.error(f"{platform_id}页面已被关闭（第{attempt+1}次）：{error_msg}")
-                    raise Exception(f"{platform_id}浏览器页面已关闭，无法截图: {error_msg}")
-
-                logger.error(f"{platform_id}页面截图失败（第{attempt+1}次）：{error_msg}")
-                if attempt < 2:
-                    logger.info(f"{platform_id}正在重试截图...")
-                    await page.wait_for_timeout(2000)
-                    continue
-
-            try:
-                filename = f"{platform_id}_{question.id}_{question.timestamp.strftime('%Y%m%d_%H%M%S')}.png"
-                filepath = self.screenshot_dir / filename
-                await page.screenshot(
-                    path=str(filepath),
-                    timeout=30000
-                )
-                logger.info(f"{platform_id}页面截图已保存（简化版）：{filepath}")
-                return str(filepath), False, share_link
-            except Exception as e2:
-                error_msg = str(e2)
-                if "closed" in error_msg.lower() or "target page" in error_msg.lower():
-                    logger.error(f"{platform_id}页面已被关闭：{error_msg}")
-                    raise Exception(f"{platform_id}浏览器页面已关闭，无法截图: {error_msg}")
-                logger.error(f"{platform_id}简化截图也失败：{error_msg}")
-
-        logger.error(f"{platform_id}截图全部失败")
-        return None, False, None
-
-    async def capture(self, platform_id: str, question: Question, answer: str) -> Optional[str]:
-        try:
-            browser = await self._get_browser()
-            page = await browser.new_page()
-
-            html_content = self._generate_html(platform_id, question, answer)
-            await page.set_content(html_content)
-
-            filename = f"{platform_id}_{question.id}_{question.timestamp.strftime('%Y%m%d_%H%M%S')}.png"
-            filepath = self.screenshot_dir / filename
-
-            await page.screenshot(path=str(filepath), full_page=True)
-            await page.close()
-
-            logger.info(f"截图已保存：{filepath}")
-            return str(filepath)
-
         except Exception as e:
-            logger.error(f"截图失败：{str(e)}")
-            return None
-
-    def _generate_html(self, platform_id: str, question: Question, answer: str) -> str:
-        platform_names = {
-            "doubao": "豆包",
-            "yuanbao": "元宝",
-            "qwen": "千问",
-            "ernie": "文心一言",
-            "deepseek": "Deepseek"
-        }
-
-        platform_name = platform_names.get(platform_id, platform_id)
-
-        html = f"""
-        <!DOCTYPE html>
-        <html lang="zh-CN">
-        <head>
-            <meta charset="UTF-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>AI问答评测 - {platform_name}</title>
-            <style>
-                body {{
-                    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-                    line-height: 1.6;
-                    color: #333;
-                    max-width: 800px;
-                    margin: 0 auto;
-                    padding: 20px;
-                    background-color: #f5f5f5;
-                }}
-                .container {{
-                    background-color: white;
-                    border-radius: 8px;
-                    padding: 30px;
-                    box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-                }}
-                .header {{
-                    border-bottom: 2px solid #4CAF50;
-                    padding-bottom: 15px;
-                    margin-bottom: 20px;
-                }}
-                .platform {{
-                    font-size: 24px;
-                    font-weight: bold;
-                    color: #4CAF50;
-                }}
-                .question {{
-                    background-color: #e3f2fd;
-                    padding: 15px;
-                    border-radius: 5px;
-                    margin-bottom: 20px;
-                }}
-                .question-label {{
-                    font-weight: bold;
-                    color: #1976D2;
-                    margin-bottom: 5px;
-                }}
-                .answer {{
-                    background-color: #f1f8e9;
-                    padding: 15px;
-                    border-radius: 5px;
-                    white-space: pre-wrap;
-                }}
-                .answer-label {{
-                    font-weight: bold;
-                    color: #388E3C;
-                    margin-bottom: 5px;
-                }}
-                .timestamp {{
-                    color: #666;
-                    font-size: 12px;
-                    margin-top: 20px;
-                    text-align: right;
-                }}
-            </style>
-        </head>
-        <body>
-            <div class="container">
-                <div class="header">
-                    <div class="platform">{platform_name}</div>
-                </div>
-
-                <div class="question">
-                    <div class="question-label">问题：</div>
-                    <div>{question.text}</div>
-                </div>
-
-                <div class="answer">
-                    <div class="answer-label">回答：</div>
-                    <div>{answer}</div>
-                </div>
-
-                <div class="timestamp">
-                    问题ID: {question.id} | 时间: {question.timestamp.strftime('%Y-%m-%d %H:%M:%S')}
-                </div>
-            </div>
-        </body>
-        </html>
-        """
-
-        return html
-
-    async def close(self):
-        if self.browser:
-            await self.browser.close()
-            self.browser = None
+            logger.error(f"{platform_id}【第三步】分享链接获取失败: {str(e)}")
+            return str(download_path) if 'download_path' in locals() else None

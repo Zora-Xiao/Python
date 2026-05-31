@@ -49,8 +49,40 @@ class ExcelExporter:
         
         self._format_excel(filepath, results)
         
+        # 导出分享链接到文本文件
+        self._export_share_links(results)
+        
         logger.info(f"Excel报告已导出: {filepath}")
         return str(filepath)
+    
+    def _export_share_links(self, results: List[Result]):
+        """将分享链接追加到文本文件，保持和图片名称一致性"""
+        links_filepath = self.output_dir / "share_links.txt"
+        
+        try:
+            from datetime import datetime
+            
+            file_exists = links_filepath.exists()
+            
+            with open(links_filepath, 'a', encoding='utf-8') as f:
+                if not file_exists:
+                    f.write("=" * 80 + "\n")
+                    f.write("AI 问答评测工具 - 分享链接汇总\n")
+                    f.write("=" * 80 + "\n\n")
+                
+                for result in results:
+                    if result.share_link:
+                        timestamp = result.timestamp.strftime("%Y%m%d_%H%M%S") if result.timestamp else datetime.now().strftime("%Y%m%d_%H%M%S")
+                        screenshot_name = f"{result.platform_name}_{result.question_id}_{timestamp}"
+                        
+                        f.write(f"[{result.platform_name}] 问题 {result.question_id} | 文件名: {screenshot_name}\n")
+                        f.write(f"  问题: {result.question_text}\n")
+                        f.write(f"  链接: {result.share_link}\n")
+                        f.write("-" * 80 + "\n")
+            
+            logger.info(f"分享链接已追加到: {links_filepath}")
+        except Exception as e:
+            logger.error(f"导出分享链接失败: {str(e)}")
     
     def _format_excel(self, filepath: Path, results: List[Result]):
         wb = load_workbook(filepath)

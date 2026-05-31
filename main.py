@@ -95,7 +95,8 @@ class AIEvaluationTool:
             if platform_config.get('enabled', False):
                 adapter_class = adapter_classes.get(platform_id)
                 if adapter_class:
-                    adapter = adapter_class(platform_config)
+                    config_with_name = {**platform_config, 'name': platform_id}
+                    adapter = adapter_class(config_with_name)
                     adapters.append(adapter)
                     logger.info(f"加载适配器: {adapter.name}")
 

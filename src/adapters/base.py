@@ -26,8 +26,8 @@ class BaseAdapter(ABC):
         self.login_required = config.get("login_required", True)
         self.login_url = config.get("login_url", "")
         self.credentials = config.get("credentials", {})
-        self.username = self.credentials.get("username", "")
-        self.password = self.credentials.get("password", "")
+        self.username = self.credentials.get("username", config.get("username", ""))
+        self.password = self.credentials.get("password", config.get("password", ""))
         self.cookies_dir = Path("cookies")
         self.cookies_dir.mkdir(parents=True, exist_ok=True)
         self._browser_lock = asyncio.Lock()  # 添加锁机制
@@ -265,7 +265,18 @@ class BaseAdapter(ABC):
             # 检查是否需要登录，如果需要则等待用户手动登录
             if self.login_required:
                 logger.info(f"{self.name}步骤3: 检查登录状态")
-                await self._ensure_logged_in()
+                login_success = await self._ensure_logged_in()
+                if not login_success:
+                    return f"{self.name}登录失败或页面已关闭", "error"
+            
+            # 检查页面是否仍然有效
+            page_is_closed = self.page.is_closed() if self.page else True
+            if not self.page or page_is_closed:
+                logger.error(f"{self.name}页面已关闭，无法发送消息")
+                return f"{self.name}页面已关闭", "error"
+            
+            # 记录页面状态
+            logger.info(f"{self.name}页面状态检查: URL={self.page.url}, 已关闭={page_is_closed}")
             
             # 尝试发送消息
             logger.info(f"{self.name}步骤4: 发送消息并获取回答")
@@ -277,13 +288,13 @@ class BaseAdapter(ABC):
             logger.error(f"{self.name}适配器错误: {str(e)}")
             return f"请求异常：{str(e)}", "error"
     
-    async def _ensure_logged_in(self):
+    async def _ensure_logged_in(self) -> bool:
         """确保用户已登录，如果未登录则尝试自动登录，失败后等待手动登录"""
         try:
             # 先检查是否已登录（通过检测输入框）
             if await self._check_if_logged_in_with_input():
                 logger.info(f"{self.name}已登录（检测到输入框）")
-                return
+                return True
             
             # 尝试自动登录
             if self.username and self.password:
@@ -292,10 +303,13 @@ class BaseAdapter(ABC):
                     await self.page.wait_for_timeout(3000)
                     if await self._check_if_logged_in_with_input():
                         logger.info(f"{self.name}自动登录成功")
+                        page_is_closed = self.page.is_closed() if self.page else True
+                        logger.info(f"{self.name}登录后页面状态: URL={self.page.url}, 已关闭={page_is_closed}")
                         await self._save_cookies(self.page.context)
-                        return
+                        return True
                     else:
-                        logger.warning(f"{self.name}自动登录后仍未检测到登录状态")
+                        page_is_closed = self.page.is_closed() if self.page else True
+                        logger.warning(f"{self.name}自动登录后仍未检测到登录状态，页面状态: URL={self.page.url}, 已关闭={page_is_closed}")
             
             # 自动登录失败或未配置账号密码，等待手动登录
             logger.info(f"=" * 50)
@@ -311,7 +325,7 @@ class BaseAdapter(ABC):
                     # 检查页面是否还存在
                     if not self.page or self.page.is_closed:
                         logger.warning(f"{self.name}页面已关闭")
-                        return
+                        return False
                     
                     await self.page.wait_for_timeout(2000)
                     
@@ -319,16 +333,18 @@ class BaseAdapter(ABC):
                     if await self._check_if_logged_in_with_input():
                         logger.info(f"{self.name}登录成功")
                         await self._save_cookies(self.page.context)
-                        return
+                        return True
                         
                 except Exception as e:
                     logger.debug(f"{self.name}登录检查中出错: {str(e)}")
                     continue
             
             logger.warning(f"{self.name}登录超时，继续尝试...")
+            return False
             
         except Exception as e:
             logger.warning(f"{self.name}登录检查失败: {str(e)}")
+            return False
     
     async def _check_if_logged_in_with_input(self) -> bool:
         """通过检测聊天输入框是否可用来判断是否已登录（排除登录页面的输入框）"""
@@ -436,6 +452,15 @@ class BaseAdapter(ABC):
     async def process(self, question: Question) -> Dict[str, Any]:
         try:
             answer, status = await self.ask(question)
+            if status == "error":
+                return {
+                    "answer": answer,
+                    "status": status,
+                    "screenshot_path": None,
+                    "is_shared_image": False,
+                    "share_link": None,
+                    "error_message": answer
+                }
             screenshot_path, is_shared_image, share_link = await self.screenshot(question, answer)
             
             return {
@@ -452,6 +477,7 @@ class BaseAdapter(ABC):
                 "status": "error",
                 "screenshot_path": None,
                 "is_shared_image": False,
+                "share_link": None,
                 "error_message": str(e)
             }
     
