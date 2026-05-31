@@ -229,86 +229,240 @@ class QwenAdapter(BaseAdapter):
             return None, False, None
 
         try:
-            from src.utils.screenshot import ScreenshotTool
-            screenshot_tool = ScreenshotTool()
-
             logger.info("千问等待AI响应...")
-            await self.page.wait_for_timeout(3000)
+            await self.page.wait_for_timeout(5000)
 
-            logger.info("千问步骤1：全屏截图...")
-            screenshot_path, is_shared_image, share_link = await screenshot_tool.capture_from_page(
-                self.page,
-                self.platform_id,
-                question
-            )
+            share_link = None
+            default_screenshot_path = None
+
+            logger.info("千问步骤1：悬停到消息上等待分享按钮...")
+
+            message_selectors = [
+                ".message-content",
+                ".qwen-message-content",
+                "[class*='message']",
+                ".chat-message",
+                ".assistant-message"
+            ]
+            last_message = None
+            for sel in message_selectors:
+                try:
+                    elems = await self.page.query_selector_all(sel)
+                    if elems and len(elems) > 0:
+                        last_message = elems[-1]
+                        logger.info(f"千问找到消息元素：{sel}")
+                        break
+                except:
+                    continue
+
+            if last_message:
+                logger.info("千问悬停到最后一条消息...")
+                await last_message.hover()
+                await self.page.wait_for_timeout(3000)
 
             logger.info("千问步骤2：查找分享按钮...")
+            share_button = None
+            max_wait = 10
+
+            message_area_box = None
+            try:
+                message_container = await self.page.query_selector("[class*='message'], .qwen-message, [class*='chat']")
+                if message_container:
+                    message_area_box = await message_container.bounding_box()
+                    logger.info(f"千问消息区域: {message_area_box}")
+            except Exception as e:
+                logger.debug(f"千问查找消息区域失败: {str(e)}")
+
             share_button_selectors = [
                 ".qwen-chat-package-comp-new-action-control-container-share",
                 "[class*='share']",
                 "button[class*='share']",
-                "[data-testid*='share']"
+                "[data-testid*='share']",
+                "div[role='button'][tabindex='0']",
+                "button:has-text('share')"
             ]
 
-            share_button = None
-            for selector in share_button_selectors:
-                try:
-                    elements = await self.page.query_selector_all(selector)
-                    if elements:
-                        for elem in elements:
-                            if await elem.is_visible():
-                                share_button = elem
-                                logger.info(f"千问找到分享按钮：{selector}")
-                                break
-                        if share_button:
-                            break
-                except Exception as e:
-                    logger.debug(f"千问检查分享按钮选择器 {selector} 失败：{str(e)}")
-                    continue
-
-            if share_button:
-                await share_button.click()
-                await self.page.wait_for_timeout(2000)
-                logger.info("千问点击分享按钮")
-
-                logger.info("千问步骤3：查找复制链接按钮...")
-                copy_link_selectors = [
-                    "button:has-text('复制链接')",
-                    "button:has-text('copy link')",
-                    "button:has-text('copy')",
-                    "[class*='copy-link']",
-                    "[data-testid*='copy-link']"
-                ]
-
-                copy_link_button = None
-                for selector in copy_link_selectors:
+            for i in range(max_wait):
+                for selector in share_button_selectors:
                     try:
                         elements = await self.page.query_selector_all(selector)
                         if elements:
                             for elem in elements:
                                 if await elem.is_visible():
-                                    copy_link_button = elem
-                                    logger.info(f"千问找到复制链接按钮：{selector}")
-                                    break
-                            if copy_link_button:
+                                    class_name = await elem.get_attribute("class") or ""
+                                    text = await elem.inner_text() or ""
+                                    bounding_box = await elem.bounding_box()
+
+                                    if bounding_box and message_area_box:
+                                        if bounding_box['x'] >= message_area_box['x']:
+                                            share_button = elem
+                                            logger.info(f"千问找到分享按钮: {selector}, 位置: {bounding_box}")
+                                            break
+                                    elif "share" in class_name.lower() or "share" in text.lower():
+                                        share_button = elem
+                                        logger.info(f"千问找到分享按钮: {selector}, 文本: {text}")
+                                        break
+                            if share_button:
                                 break
                     except Exception as e:
-                        logger.debug(f"千问检查复制链接按钮选择器 {selector} 失败：{str(e)}")
+                        logger.debug(f"千问检查分享按钮 {selector} 失败: {str(e)}")
                         continue
+                if share_button:
+                    break
 
-                if copy_link_button:
-                    await copy_link_button.click()
+                if not share_button and i < max_wait - 1:
+                    logger.debug(f"千问等待分享按钮出现第{i+1}次...")
                     await self.page.wait_for_timeout(1000)
-                    logger.info("千问点击复制链接按钮")
-                    share_link = None
-                    logger.info("千问链接已复制到剪贴板")
-            else:
-                logger.warning("千问分享按钮未找到，仅使用全屏截图")
 
-            return screenshot_path, is_shared_image, share_link
+            if not share_button:
+                logger.warning("千问分享按钮未找到，使用默认截图")
+                return await self._default_screenshot(question, answer)
+
+            logger.info("千问步骤3：点击分享按钮...")
+            try:
+                is_visible = await share_button.is_visible()
+                bounding_box = await share_button.bounding_box()
+                logger.info(f"千问分享按钮状态: 可见={is_visible}, 位置={bounding_box}")
+
+                await self.page.evaluate("(element) => { element.click(); }", share_button)
+                logger.info("千问JavaScript点击成功")
+
+                await self.page.wait_for_timeout(500)
+                try:
+                    overlay = await self.page.query_selector("[class*='overlay'], [class*='modal'], [class*='dialog']")
+                    if overlay and await overlay.is_visible():
+                        logger.info("千问检测到弹窗/遮罩层出现")
+                except:
+                    pass
+
+            except Exception as e:
+                logger.warning(f"千问JavaScript点击失败: {str(e)}，尝试普通点击")
+                try:
+                    await share_button.click()
+                    logger.info("千问普通点击成功")
+                except Exception as e2:
+                    logger.error(f"千问普通点击也失败: {str(e2)}")
+                    if bounding_box:
+                        x = bounding_box['x'] + bounding_box['width'] / 2
+                        y = bounding_box['y'] + bounding_box['height'] / 2
+                        await self.page.mouse.click(x, y)
+                        logger.info(f"千问坐标点击: ({x}, {y})")
+
+            await self.page.wait_for_timeout(3000)
+            logger.info("千问分享按钮已点击")
+
+            try:
+                from datetime import datetime
+                from pathlib import Path
+                debug_path = Path("screenshots") / f"qwen_debug_after_click_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+                await self.page.screenshot(path=str(debug_path), full_page=False)
+                logger.info(f"千问点击后截图保存: {debug_path}")
+            except Exception as e:
+                logger.debug(f"千问点击后截图失败: {str(e)}")
+
+            logger.info("千问步骤4：等待并处理弹窗...")
+            button_found = False
+
+            for wait_round in range(10):
+                await self.page.wait_for_timeout(500)
+
+                if wait_round in [1, 3, 5]:
+                    try:
+                        all_elements = await self.page.query_selector_all("*")
+                        visible_with_text = []
+                        for elem in all_elements:
+                            try:
+                                if await elem.is_visible():
+                                    text = await elem.inner_text()
+                                    text = text.strip() if text else ""
+                                    if text and len(text) < 50:
+                                        class_name = await elem.get_attribute("class") or ""
+                                        tag_name = await elem.evaluate("(e) => e.tagName")
+                                        visible_with_text.append(f"{tag_name}.{class_name[:30]}:'{text[:20]}'")
+                            except:
+                                continue
+                        if visible_with_text:
+                            logger.info(f"千问弹窗调试(wait_round={wait_round}): {visible_with_text[:10]}")
+                    except Exception as e:
+                        logger.debug(f"千问弹窗调试失败: {str(e)}")
+
+                button_selectors = [
+                    "button:has-text('创建并复制')",
+                    "[role='button']:has-text('创建并复制')",
+                    "button:has-text('创建分享链接')",
+                    "[role='button']:has-text('创建分享链接')",
+                    "button:has-text('复制链接')",
+                    "[role='button']:has-text('复制链接')",
+                    "button:has-text('复制')",
+                    "[role='button']:has-text('复制')",
+                    "[class*='copy']"
+                ]
+
+                for selector in button_selectors:
+                    try:
+                        elements = await self.page.query_selector_all(selector)
+                        if elements:
+                            for elem in elements:
+                                if await elem.is_visible():
+                                    text = await elem.inner_text()
+                                    text = text.strip() if text else ""
+                                    if any(keyword in text for keyword in ["创建并复制", "创建分享链接", "复制链接", "复制"]):
+                                        try:
+                                            await self.page.evaluate("(element) => { element.click(); }", elem)
+                                        except:
+                                            await elem.click()
+                                        logger.info(f"千问找到并点击按钮: {text}")
+                                        button_found = True
+
+                                        if "创建分享链接" in text:
+                                            await self.page.wait_for_timeout(2000)
+                                            for sel2 in ["button:has-text('创建并复制')", "[role='button']:has-text('创建并复制')"]:
+                                                try:
+                                                    elems2 = await self.page.query_selector_all(sel2)
+                                                    if elems2:
+                                                        for e2 in elems2:
+                                                            if await e2.is_visible():
+                                                                await e2.click()
+                                                                logger.info("千问点击创建并复制")
+                                                                break
+                                                except:
+                                                    continue
+                                        break
+                        if button_found:
+                            break
+                    except Exception as e:
+                        logger.debug(f"千问查找按钮 {selector} 失败: {str(e)}")
+                        continue
+                if button_found:
+                    break
+
+            if button_found:
+                await self.page.wait_for_timeout(2000)
+                try:
+                    import pyperclip
+                    share_link = pyperclip.paste()
+                    if share_link and share_link.startswith("http"):
+                        logger.info(f"千问从剪贴板获取链接: {share_link}")
+                    else:
+                        try:
+                            link_input = await self.page.query_selector("input[value*='http']")
+                            if link_input:
+                                share_link = await link_input.input_value()
+                                logger.info(f"千问从输入框获取链接: {share_link}")
+                        except:
+                            share_link = None
+                except Exception as e:
+                    logger.debug(f"千问获取链接失败: {str(e)}")
+            else:
+                logger.warning("千问未找到分享相关按钮")
+
+            logger.info("千问步骤5：保存截图...")
+            default_screenshot_path, _, _ = await self._default_screenshot(question, answer)
+
+            return default_screenshot_path, False, share_link
 
         except Exception as e:
-            logger.error(f"千问截图失败：{str(e)}")
+            logger.error(f"千问截图失败: {str(e)}")
             return await self._default_screenshot(question, answer)
 
     async def _default_screenshot(self, question: Question, answer: str) -> tuple[Optional[str], bool, Optional[str]]:
