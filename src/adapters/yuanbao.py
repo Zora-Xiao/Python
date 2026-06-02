@@ -5,6 +5,8 @@ from src.models.question import Question
 from src.utils.logger import logger
 import requests
 import json
+from pathlib import Path
+from datetime import datetime
 
 #region debug-point instrumentation
 def report_debug_log(event: str, message: str, data: dict = None):
@@ -170,15 +172,37 @@ class YuanbaoAdapter(BaseAdapter):
             raise
     
     async def _get_answer(self) -> str:
+        """根据提供的HTML结构提取AI回答内容"""
         try:
-            answer_selector = ".message-content"
-            await self.page.wait_for_selector(answer_selector, timeout=15000)
-            answer_elements = await self.page.query_selector_all(answer_selector)
+            # 根据用户提供的HTML结构，AI回答内容在以下路径中：
+            # .agent-chat__bubble__content > .agent-chat__conv--ai__speech_show > .agent-chat__speech-text--box > .agent-chat__speech-text > .hyc-component-text > .hyc-content-md > .hyc-common-markdown
             
-            if answer_elements:
-                last_answer = answer_elements[-1]
-                answer = await last_answer.inner_text()
-                return answer.strip()
+            answer_selectors = [
+                # 最精准的选择器 - 根据提供的HTML结构
+                "div.agent-chat__conv--ai__speech_show .agent-chat__speech-text",
+                "div.agent-chat__bubble__content .hyc-common-markdown",
+                "div.agent-chat__bubble--ai .hyc-component-text",
+                
+                # 备用选择器
+                "div.agent-chat__speech-text--box",
+                "div.hyc-content-md",
+                ".message-content"
+            ]
+            
+            for selector in answer_selectors:
+                try:
+                    await self.page.wait_for_selector(selector, timeout=8000)
+                    answer_elements = await self.page.query_selector_all(selector)
+                    
+                    if answer_elements:
+                        last_answer = answer_elements[-1]
+                        answer = await last_answer.inner_text()
+                        if answer and answer.strip():
+                            logger.info(f"元宝成功获取回答，内容长度: {len(answer)}")
+                            return answer.strip()
+                except Exception as e:
+                    logger.debug(f"尝试选择器 '{selector}' 获取回答失败: {e}")
+                    continue
             
             return "未找到回答"
         except Exception as e:
@@ -196,6 +220,12 @@ class YuanbaoAdapter(BaseAdapter):
             check_interval = 2000
             waited_time = 0
             
+            # 根据提供的HTML结构，AI回答的容器选择器
+            answer_container_selectors = [
+                "div.agent-chat__conv--ai__speech_show",
+                "div.agent-chat__bubble--ai"
+            ]
+            
             while waited_time < max_wait_time:
                 try:
                     # 检查是否有打字指示器（表明回答正在生成）
@@ -207,7 +237,10 @@ class YuanbaoAdapter(BaseAdapter):
                         "[class*='loading']",
                         "span:has-text('typing')",
                         "span:has-text('正在输入')",
-                        "span:has-text('正在思考')"
+                        "span:has-text('正在思考')",
+                        "span:has-text('正在生成')",
+                        "div[class*='thinking']",
+                        "div[class*='spin']"
                     ]
                     
                     is_typing = False
@@ -230,15 +263,22 @@ class YuanbaoAdapter(BaseAdapter):
                         waited_time += check_interval / 1000
                         continue
                     
-                    # 检查消息是否存在且内容不为空
-                    answer_elements = await self.page.query_selector_all(".message-content")
-                    if answer_elements and len(answer_elements) > 0:
-                        last_answer = answer_elements[-1]
-                        answer_text = await last_answer.inner_text()
-                        if answer_text and answer_text.strip():
-                            logger.info(f"元宝回答已完成，内容长度: {len(answer_text)}")
-                            return answer_text.strip()
-                   
+                    # 使用提供的HTML结构选择器检查回答
+                    for container_selector in answer_container_selectors:
+                        try:
+                            answer_elements = await self.page.query_selector_all(container_selector)
+                            if answer_elements and len(answer_elements) > 0:
+                                last_answer = answer_elements[-1]
+                                answer_text = await last_answer.inner_text()
+                                if answer_text and answer_text.strip():
+                                    # 检查是否还有继续追加的迹象（末尾是否有"..."或其他标记）
+                                    trimmed_text = answer_text.strip()
+                                    if not trimmed_text.endswith('...') and not trimmed_text.endswith('。'):
+                                        logger.info(f"元宝回答已完成，内容长度: {len(answer_text)}")
+                                        return answer_text.strip()
+                        except Exception as e:
+                            logger.debug(f"检查回答容器 '{container_selector}' 失败: {e}")
+                    
                     # 如果没有找到回答，继续等待
                     await self.page.wait_for_timeout(check_interval)
                     waited_time += check_interval / 1000
@@ -254,409 +294,290 @@ class YuanbaoAdapter(BaseAdapter):
         except Exception as e:
             logger.error(f"元宝发送消息并获取回答失败: {str(e)}")
             raise
+
+    async def _robust_click(self, element, description: str = "element") -> bool:
+        """
+        尝试多种方式点击元素，提高成功率
+        返回: True if click likely succeeded (no exception), False otherwise
+        """
+        if not element:
+            return False
+        
+        # 1. Scroll into view
+        try:
+            await element.scroll_into_view_if_needed()
+            await self.page.wait_for_timeout(500)
+        except:
+            pass
+
+        # 2. Try JS Click (Most reliable for obscured elements)
+        try:
+            await element.evaluate("el => el.click()")
+            logger.info(f"元宝 JS点击 {description} 成功")
+            return True
+        except Exception as e:
+            logger.debug(f"元宝 JS点击 {description} 失败: {e}")
+
+        # 3. Try Playwright Click with force
+        try:
+            await element.click(force=True, timeout=3000)
+            logger.info(f"元宝 强制点击 {description} 成功")
+            return True
+        except Exception as e:
+            logger.debug(f"元宝 强制点击 {description} 失败: {e}")
+
+        # 4. Try Coordinate Click
+        try:
+            box = await element.bounding_box()
+            if box:
+                x = box['x'] + box['width'] / 2
+                y = box['y'] + box['height'] / 2
+                await self.page.mouse.click(x, y)
+                logger.info(f"元宝 坐标点击 {description} 成功 ({x}, {y})")
+                return True
+        except Exception as e:
+            logger.debug(f"元宝 坐标点击 {description} 失败: {e}")
+
+        logger.warning(f"元宝 所有点击方式均失败 for {description}")
+        return False
+
+    async def _find_element_with_hover(self, selectors: list, hover_target_selector: str = None) -> Optional[object]:
+            """
+            尝试查找元素，如果提供了 hover_target_selector，先悬停在该目标上再查找。
+            """
+            # 如果需要悬停触发
+            if hover_target_selector:
+                try:
+                    hover_elem = await self.page.wait_for_selector(hover_target_selector, timeout=3000, state="visible")
+                    if hover_elem:
+                        await hover_elem.hover()
+                        await self.page.wait_for_timeout(800) # 等待动画或DOM更新
+                        logger.info(f"元宝已悬停在 {hover_target_selector} 以触发菜单")
+                except Exception as e:
+                    logger.debug(f"悬停目标 {hover_target_selector} 未找到或失败: {e}")
+
+            # 查找目标元素
+            for selector in selectors:
+                try:
+                    # 使用较短超时快速遍历
+                    elem = await self.page.query_selector(selector)
+                    if elem and await elem.is_visible():
+                        return elem
+                except:
+                    continue
+            return None
     
     async def screenshot(self, question: Question, answer: str) -> tuple[Optional[str], bool, Optional[str]]:
         if self.page is None:
             return None, False, None
         
         try:
-            logger.info("元宝等待AI响应...")
-            await self.page.wait_for_timeout(5000)
+            logger.info("元宝开始截图流程...")
+            await self.page.wait_for_timeout(3000) 
             
-            default_screenshot_path = None
-            share_link = None
+            share_btn = None
             
-            logger.info("元宝步骤1：查找并点击分享按钮...")
-            share_button_elem = None
-            
-            share_button_selectors = [
+            # --- 策略 1: 根据用户提供的HTML结构查找分享按钮 ---
+            # 分享按钮位于: .agent-chat__conv--ai__toolbar > .agent-chat__toolbar > .agent-chat__toolbar__right
+            # 按钮结构: <div class="Toolbar_icon__xGP8b Toolbar_shareIcon__pXI31 Toolbar_isWeb__zF51c">
+            #             <span class="yb-icon iconfont-yb icon-yb-ic_share_2504"></span>
+            #          </div>
+            direct_share_selectors = [
+                # 基于提供的HTML结构 - 最精准的选择器
                 "div.Toolbar_shareIcon__pXI31",
                 "div[class*='Toolbar_shareIcon']",
-                "div[class*='shareIcon']",
                 "span.icon-yb-ic_share_2504",
                 "span[class*='icon-yb-ic_share']",
-                "[class*='icon-yb-ic_share']",
-                "button[data-testid='share-button']",
-                "div.chat-footer button[class*='share']",
-                "div.message-actions button[class*='share']",
-                "button[aria-label*='share']",
-                "button[title*='分享']",
-                ".share-icon-wrapper",
-                "div[class*='share']:not(.sidebar-share)",
+                "div.agent-chat__toolbar__right div[class*='shareIcon']",
+                "div.agent-chat__conv--ai__toolbar div[class*='share']",
+                
+                # 备用选择器
+                "div[class*='shareIcon']",
                 "button[class*='share']",
-                "svg[class*='share']",
-                "[class*='share-btn']",
-                "[class*='share-button']",
-                "[data-testid*='share']",
-                ".share-icon",
-                "button:has(svg[class*='share'])"
+                "svg[path*='share']",
+                "[title*='分享']",
+                "button[aria-label*='分享']"
             ]
             
-            for selector in share_button_selectors:
-                try:
-                    elem = await self.page.wait_for_selector(selector, timeout=5000, state="visible")
-                    if elem:
-                        #region debug-point element-found
-                        # 获取元素的详细信息用于调试
-                        try:
-                            tag_name = await elem.evaluate("el => el.tagName")
-                            class_name = await elem.get_attribute("class") or ""
-                            id_name = await elem.get_attribute("id") or ""
-                            aria_label = await elem.get_attribute("aria-label") or ""
-                            inner_text = await elem.inner_text() or ""
-                            bounding_box = await elem.bounding_box()
-                            outer_html = await elem.evaluate("el => el.outerHTML.substring(0, 500)")
-                            
-                            # Report to Debug Server
-                            report_debug_log(
-                                'element_found',
-                                f'Found potential share button with selector: {selector}',
-                                {
-                                    'selector': selector,
-                                    'tag_name': tag_name,
-                                    'class_name': class_name[:100],
-                                    'id': id_name,
-                                    'aria_label': aria_label,
-                                    'text': inner_text[:50],
-                                    'bounding_box': bounding_box,
-                                    'html': outer_html
-                                }
-                            )
-                            
-                            logger.info(f"元宝找到潜在分享按钮:")
-                            logger.info(f"  选择器: {selector}")
-                            logger.info(f"  标签: {tag_name}")
-                            logger.info(f"  class: {class_name[:100]}")
-                            logger.info(f"  id: {id_name}")
-                            logger.info(f"  aria-label: {aria_label}")
-                            logger.info(f"  text: {inner_text[:50]}")
-                            logger.info(f"  位置: {bounding_box}")
-                            logger.debug(f"  HTML: {outer_html}")
-                        except Exception as debug_error:
-                            report_debug_log('element_debug_failed', f'Failed to get element details: {str(debug_error)}')
-                            logger.debug(f"获取元素信息失败: {str(debug_error)}")
-                        #endregion
-                        
-                        share_button_elem = elem
-                        logger.info(f"元宝分享按钮匹配成功: {selector}")
-                        break
-                except Exception as e:
-                    report_debug_log('selector_failed', f'Selector {selector} failed: {str(e)}')
-                    logger.debug(f"元宝检查分享按钮选择器 {selector} 失败: {str(e)}")
-                    continue
+            # 最后一条消息的选择器（用于悬停触发菜单）
+            last_message_selector = "div.agent-chat__list__item--ai:last-child, div.agent-chat__bubble--ai:last-child"
             
-            if not share_button_elem:
-                logger.warning("元宝分享按钮未找到，使用默认截图")
-                return await self._default_screenshot(question, answer)
+            logger.info("元宝策略1: 尝试悬停在最后一条消息并查找分享按钮...")
+            share_btn = await self._find_element_with_hover(direct_share_selectors, hover_target_selector=last_message_selector)
             
-            logger.info("元宝步骤2：尝试点击分享按钮...")
-            
-            #region debug-point click-attempts
-            # Fix: 先滚动页面，确保分享按钮进入可视区域
-            try:
-                # 滚动到页面底部，让分享按钮进入可视区域
-                report_debug_log('scroll_page', 'Scrolling page to bring share button into view')
-                await self.page.evaluate('window.scrollTo(0, document.body.scrollHeight)')
-                await self.page.wait_for_timeout(2000)
+            if not share_btn:
+                logger.info("元宝策略1失败。策略2: 尝试全局查找分享按钮...")
+                share_btn = await self._find_element_with_hover(direct_share_selectors, hover_target_selector=None)
+
+            if not share_btn:
+                # --- 策略 3: 尝试查找工具栏区域 ---
+                logger.info("元宝策略2失败。策略3: 尝试查找工具栏区域...")
+                toolbar_selectors = [
+                    "div.agent-chat__toolbar",
+                    "div.agent-chat__conv--ai__toolbar"
+                ]
                 
-                # 再次检查分享按钮的位置
-                bounding_box = await share_button_elem.bounding_box()
-                if bounding_box:
-                    center_x = bounding_box['x'] + bounding_box['width'] / 2
-                    center_y = bounding_box['y'] + bounding_box['height'] / 2
-                    
-                    report_debug_log(
-                        'button_position_after_scroll',
-                        f'Share button position after scroll: ({center_x}, {center_y})',
-                        {
-                            'bounding_box': bounding_box,
-                            'center': {'x': center_x, 'y': center_y}
-                        }
-                    )
-                    
-                    # 如果Y坐标仍然是负数，继续滚动
-                    if bounding_box['y'] < 0:
-                        report_debug_log('negative_y', f'Button Y is still negative: {bounding_box["y"]}, scrolling more')
-                        # 滚动到元素位置
-                        await share_button_elem.scroll_into_view_if_needed()
-                        await self.page.wait_for_timeout(1000)
-                        
-                        # 再次获取位置
-                        bounding_box = await share_button_elem.bounding_box()
-                        report_debug_log(
-                            'button_position_final',
-                            f'Final button position: ({bounding_box["x"]}, {bounding_box["y"]})',
-                            {'bounding_box': bounding_box}
-                        )
-                    
-                    logger.info(f"元宝分享按钮位置: x={bounding_box['x']}, y={bounding_box['y']}, width={bounding_box['width']}, height={bounding_box['height']}")
-                    logger.info(f"元宝分享按钮中心坐标: ({center_x}, {center_y})")
-                
-                # 等待元素稳定
-                await self.page.wait_for_timeout(500)
-                
-                # 尝试多种点击方式
-                report_debug_log('trying_multiple_click_methods', 'Trying multiple click methods')
-                
-                # 方法1: 点击内部的span图标
-                try:
-                    span_elem = await share_button_elem.query_selector("span.yb-icon, span.iconfont-yb, span[class*='icon-yb']")
-                    if span_elem:
-                        report_debug_log('found_span_icon', 'Found span icon inside share button')
-                        logger.info("元宝找到分享按钮内部的span图标")
-                        
-                        # 先hover span图标
-                        await span_elem.hover()
-                        await self.page.wait_for_timeout(500)
-                        
-                        # 使用JavaScript点击span图标
-                        await span_elem.evaluate('el => el.click()')
-                        report_debug_log('span_js_click_success', 'JavaScript click on span icon succeeded')
-                        logger.info("元宝JavaScript点击span图标成功")
-                        
-                        await self.page.wait_for_timeout(2000)
-                        
-                        # 检查弹窗是否出现
-                        try:
-                            popup = await self.page.query_selector("div[class*='share-modal'], div[class*='popup'], [role='dialog'], [class*='share-menu']")
-                            if popup and await popup.is_visible():
-                                report_debug_log('popup_detected', 'Share popup appeared after span click')
-                                logger.info("元宝检测到分享弹窗已出现（span点击）")
-                                return  # 成功，直接返回
-                        except Exception as popup_error:
-                            report_debug_log('popup_check_failed', f'Popup check failed: {str(popup_error)}')
-                except Exception as span_error:
-                    report_debug_log('span_click_failed', f'Span click failed: {str(span_error)}')
-                    logger.debug(f"元宝点击span图标失败: {str(span_error)}")
-                
-                # 方法2: 使用JavaScript点击div元素
-                try:
-                    await share_button_elem.evaluate('el => el.click()')
-                    report_debug_log('js_click_success', 'JavaScript click on div succeeded')
-                    logger.info("元宝JavaScript点击分享按钮成功")
-                    
-                    await self.page.wait_for_timeout(2000)
-                    
-                    # 检查弹窗是否出现
+                for toolbar_sel in toolbar_selectors:
                     try:
-                        popup = await self.page.query_selector("div[class*='share-modal'], div[class*='popup'], [role='dialog'], [class*='share-menu']")
-                        if popup and await popup.is_visible():
-                            report_debug_log('popup_detected', 'Share popup appeared after JS click')
-                            logger.info("元宝检测到分享弹窗已出现（JS点击）")
-                            return  # 成功，直接返回
-                    except Exception as popup_error:
-                        report_debug_log('popup_check_failed', f'Popup check failed: {str(popup_error)}')
-                except Exception as js_error:
-                    report_debug_log('js_click_failed', f'JavaScript click failed: {str(js_error)}')
-                    logger.warning(f"元宝JavaScript点击失败: {str(js_error)}")
-                
-                # 方法3: 使用坐标点击
-                if bounding_box and bounding_box['y'] > 0:
-                    center_x = bounding_box['x'] + bounding_box['width'] / 2
-                    center_y = bounding_box['y'] + bounding_box['height'] / 2
-                    
-                    report_debug_log('using_coordinate_click', 'Using coordinate click as fallback')
-                    logger.info(f"元宝使用坐标点击分享按钮: ({center_x}, {center_y})")
-                    
-                    await self.page.mouse.click(center_x, center_y)
-                    report_debug_log('coordinate_click_success', f'Coordinate click at ({center_x}, {center_y}) succeeded')
-                    logger.info("元宝坐标点击分享按钮成功")
-                    
-                    await self.page.wait_for_timeout(2000)
-                    
-                    try:
-                        popup = await self.page.query_selector("div[class*='share-modal'], div[class*='popup'], [role='dialog'], [class*='share-menu']")
-                        if popup and await popup.is_visible():
-                            report_debug_log('popup_detected', 'Share popup appeared after coordinate click')
-                            logger.info("元宝检测到分享弹窗已出现（坐标点击）")
-                        else:
-                            report_debug_log('popup_not_detected', 'No popup after all click methods')
-                            logger.warning("元宝所有点击方式后均未检测到弹窗")
-                    except Exception as popup_error:
-                        report_debug_log('popup_check_failed', f'Popup check failed: {str(popup_error)}')
-            #endregion
-                        
-            except Exception as e:
-                logger.warning(f"元宝标准点击分享按钮失败: {str(e)}，尝试强制点击...")
-                try:
-                    await share_button_elem.click(force=True, timeout=5000)
-                    logger.info("元宝强制点击分享按钮成功")
-                    await self.page.wait_for_timeout(1000)
-                except Exception as e2:
-                    logger.error(f"元宝强制点击分享按钮也失败: {str(e2)}，尝试JS点击...")
-                    try:
-                        await share_button_elem.evaluate("el => el.click()")
-                        logger.info("元宝JS点击分享按钮成功")
-                        await self.page.wait_for_timeout(1000)
-                    except Exception as e3:
-                        logger.error(f"元宝JS点击分享按钮也失败: {str(e3)}，尝试坐标点击...")
-                        try:
-                            if bounding_box:
-                                x = bounding_box['x'] + bounding_box['width'] / 2
-                                y = bounding_box['y'] + bounding_box['height'] / 2
-                                await self.page.mouse.click(x, y)
-                                logger.info(f"元宝坐标点击分享按钮成功: ({x}, {y})")
-                                await self.page.wait_for_timeout(1000)
-                            else:
-                                raise Exception("无法获取按钮位置信息")
-                        except Exception as e4:
-                            logger.error(f"元宝所有点击方式均失败: {str(e4)}")
-                            return await self._default_screenshot(question, answer)
-            
-            try:
-                await self.page.wait_for_selector("div[class*='share-modal'], div[class*='popup'], [role='dialog'], [class*='share-menu']", timeout=5000)
-                logger.info("元宝分享弹窗已出现")
-                
-                debug_path = Path("screenshots") / f"yuanbao_debug_popup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
-                await self.page.screenshot(path=str(debug_path), full_page=False)
-                logger.info(f"元宝弹窗截图保存: {debug_path}")
-            except:
-                logger.warning("元宝分享弹窗未及时出现，可能点击无效")
-            
-            await self.page.wait_for_timeout(1000)
-            
-            try:
-                from datetime import datetime
-                from pathlib import Path
-                debug_path = Path("screenshots") / f"yuanbao_debug_after_click_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
-                await self.page.screenshot(path=str(debug_path), full_page=False)
-                logger.info(f"元宝点击后截图保存: {debug_path}")
-            except Exception as e:
-                logger.debug(f"元宝点击后截图失败: {str(e)}")
-            
-            logger.info("元宝步骤3：查找生成图片按钮...")
-            gen_btn = None
-            max_wait_rounds = 10
-            
-            gen_selectors = [
-                "button:has-text('生成图片')",
-                "button:has-text('保存图片')",
-                "button:has-text('分享图片')",
-                "button:has-text('Share Image')",
-                "button:has-text('Create Image')",
-                "button:has-text('generate image')",
-                "button:has-text('Generate Image')",
-                "button:has-text('generate')",
-                "div[class*='share-option']:visible",
-                "div[class*='share-menu'] button",
-                "div[class*='popup'] button",
-                "[class*='share-option']:visible",
-                "[class*='generate-image']",
-                "[class*='create-image']",
-                "[data-testid*='generate']",
-                "[aria-label*='image']"
-            ]
-            
-            for round_num in range(max_wait_rounds):
-                logger.info(f"元宝查找生成图片按钮第{round_num + 1}轮...")
-                
-                for selector in gen_selectors:
-                    try:
-                        elements = await self.page.query_selector_all(selector)
-                        if elements:
-                            for elem in elements:
-                                if await elem.is_visible():
-                                    text = await elem.inner_text() or ""
-                                    class_name = await elem.get_attribute("class") or ""
-                                    
-                                    if any(keyword in text.lower() or keyword in class_name.lower() 
-                                           for keyword in ['生成', '图片', 'image', 'generate', 'save']):
-                                        gen_btn = elem
-                                        logger.info(f"元宝找到生成/分享图片按钮: {selector}, 文本: '{text}', class: {class_name[:50]}")
-                                        break
-                            if gen_btn:
+                        toolbar_elem = await self.page.wait_for_selector(toolbar_sel, timeout=3000)
+                        if toolbar_elem:
+                            await toolbar_elem.hover()
+                            await self.page.wait_for_timeout(800)
+                            share_btn = await self._find_element_with_hover(direct_share_selectors, hover_target_selector=None)
+                            if share_btn:
                                 break
                     except Exception as e:
-                        logger.debug(f"元宝检查生成图片按钮 {selector} 失败: {str(e)}")
+                        logger.debug(f"尝试工具栏选择器 '{toolbar_sel}' 失败: {e}")
                         continue
-                
-                if gen_btn:
-                    break
-                
-                if round_num < max_wait_rounds - 1:
-                    logger.debug(f"元宝等待生成图片按钮出现第{round_num + 1}次...")
-                    await self.page.wait_for_timeout(1000)
-            
-            if not gen_btn:
-                logger.warning("元宝生成图片按钮未找到，使用默认截图")
+
+            if not share_btn:
+                # --- 如果仍然没找到，进行调试截图并回退 ---
+                logger.error("元宝所有策略均未找到分享按钮！")
+                debug_path = Path("screenshots") / f"yuanbao_debug_no_btn_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+                await self.page.screenshot(path=str(debug_path), full_page=True)
+                logger.info(f"元宝调试截图已保存: {debug_path}")
                 return await self._default_screenshot(question, answer)
             
-            try:
-                await gen_btn.hover()
-                await self.page.wait_for_timeout(500)
-                
-                await gen_btn.click(timeout=5000)
-                logger.info("元宝标准点击生成图片按钮成功")
-            except Exception as e:
-                logger.warning(f"元宝标准点击生成图片按钮失败: {str(e)}，尝试强制点击...")
-                try:
-                    await gen_btn.click(force=True, timeout=5000)
-                    logger.info("元宝强制点击生成图片按钮成功")
-                except Exception as e2:
-                    logger.error(f"元宝强制点击生成图片按钮也失败: {str(e2)}，尝试JS点击...")
-                    try:
-                        await gen_btn.evaluate("el => el.click()")
-                        logger.info("元宝JS点击生成图片按钮成功")
-                    except Exception as e3:
-                        logger.error(f"元宝所有点击方式均失败: {str(e3)}")
-                        return await self._default_screenshot(question, answer)
+            logger.info(f"元宝成功定位分享按钮，准备点击...")
             
-            await self.page.wait_for_timeout(3000)
-            logger.info("元宝生成图片按钮已点击")
+            # --- 执行点击和后续流程 ---
+            clicked = await self._robust_click(share_btn, "分享按钮")
+            if not clicked:
+                logger.warning("元宝点击分享按钮失败，执行默认截图")
+                return await self._default_screenshot(question, answer)
             
-            logger.info("元宝步骤4：查找保存图片按钮...")
-            save_selectors = [
-                "button:has-text('save image')",
-                "button:has-text('save')",
-                "button:has-text('保存')",
-                "[class*='save']",
-                "[download]",
-                "[data-testid*='save']"
+            await self.page.wait_for_timeout(1500) 
+
+            # --- 查找生成/保存图片按钮 ---
+            logger.info("元宝步骤3: 查找生成图片按钮...")
+            gen_btn = None
+            
+            # 根据常见分享弹窗结构查找生成图片按钮
+            gen_btn_selectors = [
+                "div:has-text('生成图片')",
+                "button:has-text('生成图片')",
+                "div[class*='share-bar'] div:has-text('生成图片')",
+                "[aria-label*='生成图片']"
             ]
             
-            save_btn = None
-            for selector in save_selectors:
+            for selector in gen_btn_selectors:
                 try:
-                    elem = await self.page.wait_for_selector(selector, timeout=3000, state="visible")
-                    if elem:
-                        save_btn = elem
-                        logger.info(f"元宝找到保存图片按钮: {selector}")
-                        break
-                except:
+                    elems = await self.page.query_selector_all(selector)
+                    if elems:
+                        for elem in elems:
+                            if await elem.is_visible():
+                                gen_btn = elem
+                                logger.info(f"元宝找到生成图片按钮: {selector}")
+                                break
+                        if gen_btn:
+                            break
+                except Exception as e:
+                    logger.debug(f"查找生成图片按钮失败: {e}")
                     continue
             
-            if save_btn:
-                try:
-                    await save_btn.hover()
-                    await self.page.wait_for_timeout(500)
-                    
-                    await save_btn.click(timeout=5000)
-                    logger.info("元宝标准点击保存图片按钮成功")
-                except Exception as e:
-                    logger.warning(f"元宝标准点击保存图片按钮失败: {str(e)}，尝试强制点击...")
+            if gen_btn:
+                logger.info("元宝准备点击生成图片按钮...")
+                
+                # 点击生成图片按钮
+                clicked_gen = await self._robust_click(gen_btn, "生成图片按钮")
+                if not clicked_gen:
+                    logger.error("元宝点击生成图片按钮失败")
+                    return await self._default_screenshot(question, answer)
+                
+                logger.info("元宝已点击生成图片按钮，等待图片生成及预览窗口出现...")
+                await self.page.wait_for_timeout(6000)
+                
+                # --- 查找并点击下载按钮 ---
+                logger.info("元宝步骤4: 查找并点击下载按钮...")
+                download_btn = None
+                
+                download_selectors = [
+                    "div:has-text('下载')",
+                    "button:has-text('下载')",
+                    "[aria-label*='下载']",
+                    "[aria-label*='Download']",
+                    "[class*='download']"
+                ]
+                
+                for selector in download_selectors:
                     try:
-                        await save_btn.click(force=True, timeout=5000)
-                        logger.info("元宝强制点击保存图片按钮成功")
-                    except Exception as e2:
-                        logger.error(f"元宝强制点击保存图片按钮也失败: {str(e2)}，尝试JS点击...")
-                        try:
-                            await save_btn.evaluate("el => el.click()")
-                            logger.info("元宝JS点击保存图片按钮成功")
-                        except Exception as e3:
-                            logger.error(f"元宝所有点击方式均失败: {str(e3)}")
-                await self.page.wait_for_timeout(2000)
+                        elem = await self.page.wait_for_selector(selector, timeout=3000, state="visible")
+                        if elem:
+                            download_btn = elem
+                            logger.info(f"元宝找到下载按钮: {selector}")
+                            break
+                    except Exception as e:
+                        logger.debug(f"查找下载按钮失败: {e}")
+                        continue
+                
+                if download_btn:
+                    logger.info("元宝准备点击下载按钮...")
+                    clicked_download = await self._robust_click(download_btn, "下载按钮")
+                    if clicked_download:
+                        logger.info("元宝已点击下载按钮，等待保存...")
+                        await self.page.wait_for_timeout(3000)
+                    else:
+                        logger.warning("元宝点击下载按钮失败")
+                else:
+                    logger.warning("元宝未找到下载按钮，将尝试直接截取预览图")
+                
+                # --- 尝试截取生成的图片或预览区域 ---
+                logger.info("元宝步骤5: 查找并截取生成的图片...")
+                img_container_selectors = [
+                    "div[class*='photo-view'] img",
+                    "div[class*='preview'] img",
+                    "[role='dialog'] img",
+                    ".modal img",
+                    "canvas[class*='share']"
+                ]
+                
+                final_img_elem = None
+                for sel in img_container_selectors:
+                    try:
+                        final_img_elem = await self.page.wait_for_selector(sel, timeout=3000, state="visible")
+                        if final_img_elem:
+                            logger.info(f"元宝找到最终图片元素: {sel}")
+                            break
+                    except Exception as e:
+                        logger.debug(f"查找图片元素失败: {e}")
+                        continue
+                
+                if final_img_elem:
+                    await self.page.wait_for_timeout(1000)
+                    
+                    timestamp = int(datetime.now().timestamp() * 1000)
+                    save_dir = Path("screenshots")
+                    save_dir.mkdir(exist_ok=True)
+                    file_path = save_dir / f"yuanbao_share_{timestamp}.png"
+                    
+                    try:
+                        await final_img_elem.screenshot(path=str(file_path))
+                        logger.info(f"元宝成功截取分享图片: {file_path}")
+                        
+                        if file_path.exists() and file_path.stat().st_size > 0:
+                            logger.info(f"元宝分享图片文件大小: {file_path.stat().st_size} bytes")
+                            return str(file_path), True, None
+                        else:
+                            logger.warning(f"元宝分享图片文件无效，回退到默认截图")
+                            return await self._default_screenshot(question, answer)
+                    except Exception as screenshot_err:
+                        logger.error(f"元宝截取图片元素失败: {str(screenshot_err)}")
+                        return await self._default_screenshot(question, answer)
+                else:
+                    logger.warning("元宝点击了生成/下载按钮但未检测到结果图片")
+                    return await self._default_screenshot(question, answer)
             else:
-                logger.warning("元宝保存图片按钮未找到")
-            
-            logger.info("元宝步骤5：保存截图...")
-            default_screenshot_path, _, _ = await self._default_screenshot(question, answer)
-            
-            return default_screenshot_path, False, share_link
-            
-        except Exception as e:
-            logger.error(f"元宝截图失败：{str(e)}")
+                logger.warning("元宝未找到生成图片按钮，直接使用默认截图")
+                return await self._default_screenshot(question, answer)
+
             return await self._default_screenshot(question, answer)
-    
+
+        except Exception as e:
+            logger.error(f"元宝截图流程异常: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return await self._default_screenshot(question, answer)
+
     async def _default_screenshot(self, question: Question, answer: str) -> tuple[Optional[str], bool, Optional[str]]:
         try:
             from src.utils.screenshot import ScreenshotTool
