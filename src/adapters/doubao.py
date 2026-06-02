@@ -156,7 +156,29 @@ class DoubaoAdapter(BaseAdapter):
 
     async def _get_answer(self) -> str:
         try:
+            # 根据提供的HTML结构：
+            # <div class="relative flex-row flex w-full" data-message-id="46490029879612418">
+            #   <div data-container-type="block-v2" class="flex w-full flex-col space-y-20">
+            #     <div data-render-engine="node">
+            #       <div class="container-P2rR72 flow-markdown-body theme-samantha-uDexJL container-ZLUAIf mdbox-theme-next">
+            #         <div class="auto-hide-last-sibling-br paragraph-pP9ZLC paragraph-element">你好呀～有什么需要帮忙的吗？</div>
+            #       </div>
+            #     </div>
+            #   </div>
+            # </div>
+            
             answer_selectors = [
+                # 最精准：基于提供的HTML结构
+                "div[data-message-id] div[data-container-type='block-v2'] div.flow-markdown-body",
+                "div[data-message-id] div[data-container-type='block-v2']",
+                "div.flow-markdown-body",
+                "div.container-P2rR72",
+                
+                # 段落级别选择器
+                "div.auto-hide-last-sibling-br.paragraph-pP9ZLC",
+                "div.paragraph-pP9ZLC",
+                
+                # 备用选择器
                 ".message-content",
                 ".answer-content",
                 ".response-content",
@@ -183,6 +205,7 @@ class DoubaoAdapter(BaseAdapter):
                                     logger.info(f"豆包成功获取回答：{text[:30]}...")
                                     return text.strip()
                     except Exception as e:
+                        logger.debug(f"豆包尝试选择器 {selector} 失败: {e}")
                         continue
                 await self.page.wait_for_timeout(1000)
 
