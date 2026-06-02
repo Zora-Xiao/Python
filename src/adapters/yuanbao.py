@@ -441,6 +441,15 @@ class YuanbaoAdapter(BaseAdapter):
             logger.info(f"元宝成功定位分享按钮，准备点击...")
             
             # --- 执行点击和后续流程 ---
+            # 先获取分享按钮的详细信息
+            try:
+                share_btn_html = await share_btn.evaluate("el => el.outerHTML")
+                share_btn_box = await share_btn.bounding_box()
+                logger.info(f"元宝分享按钮HTML: {share_btn_html[:200]}")
+                logger.info(f"元宝分享按钮位置: {share_btn_box}")
+            except:
+                pass
+            
             clicked = await self._robust_click(share_btn, "分享按钮")
             if not clicked:
                 logger.warning("元宝点击分享按钮失败，执行默认截图")
@@ -449,49 +458,43 @@ class YuanbaoAdapter(BaseAdapter):
             await self.page.wait_for_timeout(1500) 
 
             # --- 等待分享弹窗出现并查找生成图片按钮 ---
-            # 根据提供的HTML结构：
-            # <div class="agent-chat__share-bar-container">
-            #   <div class="agent-chat__share-bar">
-            #     <div class="agent-chat__share-bar__content">
-            #       <div class="agent-chat__share-bar__content__center">
-            #         <div class="agent-chat__share-bar__item">...</div>
-            #         <div class="agent-chat__share-bar__item">
-            #           <div class="agent-chat__share-bar__item__logo"><svg>...</svg></div>
-            #           <div class="agent-chat__share-bar__item__name">生成图片</div>
-            #         </div>
-            #       </div>
-            #     </div>
-            #   </div>
-            # </div>
-            
             logger.info("元宝等待分享弹窗出现...")
             share_bar_container = None
-            try:
-                share_bar_container = await self.page.wait_for_selector(
-                    "div.agent-chat__share-bar-container", 
-                    timeout=5000, 
-                    state="visible"
-                )
-                logger.info("元宝分享弹窗已出现")
-            except Exception as e:
-                logger.warning(f"元宝分享弹窗未出现: {e}")
-                # 尝试查找是否有其他形式的分享弹窗
-                alternative_containers = [
-                    "div[class*='share-bar']",
-                    "[role='dialog'][class*='share']"
-                ]
-                for alt_sel in alternative_containers:
-                    try:
-                        share_bar_container = await self.page.wait_for_selector(alt_sel, timeout=2000, state="visible")
-                        if share_bar_container:
-                            logger.info(f"元宝找到备选分享弹窗: {alt_sel}")
-                            break
-                    except:
-                        continue
+            
+            # 尝试多种方式等待分享弹窗
+            share_popup_selectors = [
+                "div.agent-chat__share-bar-container",
+                "div[class*='share-bar']",
+                "[role='dialog'][class*='share']",
+                "div[class*='share']"
+            ]
+            
+            for popup_sel in share_popup_selectors:
+                try:
+                    share_bar_container = await self.page.wait_for_selector(popup_sel, timeout=3000, state="visible")
+                    if share_bar_container:
+                        logger.info(f"元宝分享弹窗已出现: {popup_sel}")
+                        break
+                except:
+                    continue
             
             if not share_bar_container:
-                logger.warning("元宝未找到分享弹窗，执行默认截图")
+                logger.warning("元宝未找到分享弹窗")
+                # 保存调试截图
+                try:
+                    debug_path = Path("screenshots") / f"yuanbao_no_popup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+                    await self.page.screenshot(path=str(debug_path), full_page=True)
+                    logger.info(f"元宝无弹窗调试截图已保存: {debug_path}")
+                except:
+                    pass
                 return await self._default_screenshot(question, answer)
+            
+            # 获取弹窗的HTML用于调试
+            try:
+                popup_html = await share_bar_container.evaluate("el => el.outerHTML")
+                logger.debug(f"元宝分享弹窗HTML: {popup_html[:500]}")
+            except:
+                pass
             
             # --- 查找生成图片按钮 ---
             logger.info("元宝步骤3: 查找生成图片按钮...")
@@ -500,70 +503,191 @@ class YuanbaoAdapter(BaseAdapter):
             # 根据提供的HTML结构，生成图片按钮的精准选择器
             gen_btn_selectors = [
                 # 1. 最精准：基于完整结构路径
-                "div.agent-chat__share-bar__content__center .agent-chat__share-bar__item:has(div.agent-chat__share-bar__item__name:has-text('生成图片'))",
+                "div.agent-chat__share-bar__content__center .agent-chat__share-bar__item:nth-child(2)",
+                "div.agent-chat__share-bar__content__center > div.agent-chat__share-bar__item",
                 
-                # 2. 基于按钮名称文本查找
+                # 2. 基于按钮名称文本查找（包含文本的div）
                 "div.agent-chat__share-bar__item__name:has-text('生成图片')",
                 
-                # 3. 查找包含生成图片文本的item项（备用）
-                "div.agent-chat__share-bar__item:has-text('生成图片')",
+                # 3. 查找包含生成图片文本的item项
+                "div.agent-chat__share-bar__item:has(div.agent-chat__share-bar__item__name:has-text('生成图片'))",
                 
-                # 4. 基于SVG特征（第二个SVG的path特征）
+                # 4. 基于SVG特征（第二个SVG的path特征 - 生成图片的图标）
                 "div.agent-chat__share-bar__item:has(svg path[d*='M2.5 5C2.5 4.44771'])",
                 
-                # 5. 更通用的选择器（备用）
+                # 5. 通用选择器
                 "div[class*='share-bar__item']:has(div:has-text('生成图片'))"
             ]
             
+            found_items = []
             for selector in gen_btn_selectors:
                 try:
-                    logger.debug(f"元宝尝试生成图片按钮选择器: {selector}")
                     elems = await self.page.query_selector_all(selector)
                     if elems:
-                        for elem in elems:
+                        logger.debug(f"元宝选择器 '{selector}' 匹配到 {len(elems)} 个元素")
+                        for i, elem in enumerate(elems):
                             if await elem.is_visible():
-                                # 验证按钮内容
                                 try:
-                                    button_text = await elem.text_content()
-                                    if button_text and '生成图片' in button_text:
-                                        logger.info(f"元宝找到生成图片按钮: {selector}")
-                                        gen_btn = elem
-                                        break
-                                    elif selector == "div.agent-chat__share-bar__item__name:has-text('生成图片')":
-                                        # 如果找到的是name元素，获取其父级item
-                                        parent_item = await elem.evaluate("el => el.parentElement")
-                                        if parent_item:
-                                            gen_btn = parent_item
-                                            logger.info(f"元宝找到生成图片按钮（通过name元素）")
-                                            break
+                                    text = await elem.text_content()
+                                    html = await elem.evaluate("el => el.outerHTML")
+                                    box = await elem.bounding_box()
+                                    found_items.append({
+                                        'selector': selector,
+                                        'index': i,
+                                        'text': text.strip() if text else None,
+                                        'html': html[:150],
+                                        'box': box
+                                    })
                                 except:
-                                    # 验证失败时直接使用找到的元素
-                                    gen_btn = elem
-                                    logger.info(f"元宝找到生成图片按钮: {selector}")
-                                    break
-                        if gen_btn:
-                            break
+                                    found_items.append({
+                                        'selector': selector,
+                                        'index': i,
+                                        'text': None,
+                                        'html': None,
+                                        'box': None
+                                    })
                 except Exception as e:
                     logger.debug(f"查找生成图片按钮失败: {e}")
                     continue
             
+            # 打印所有找到的元素信息
+            if found_items:
+                logger.info(f"元宝找到 {len(found_items)} 个潜在按钮元素:")
+                for item in found_items:
+                    logger.info(f"  - 选择器: {item['selector']}")
+                    logger.info(f"    索引: {item['index']}, 文本: {item['text']}")
+                    logger.info(f"    位置: {item['box']}")
+                    logger.debug(f"    HTML: {item['html']}")
+            
+            # 选择最可能的按钮
+            for item in found_items:
+                if item['text'] and '生成图片' in item['text']:
+                    # 通过querySelectorAll重新获取元素
+                    elems = await self.page.query_selector_all(item['selector'])
+                    if elems and item['index'] < len(elems):
+                        gen_btn = elems[item['index']]
+                        logger.info(f"元宝选择包含'生成图片'文本的按钮")
+                        break
+                elif item['selector'] == "div.agent-chat__share-bar__content__center .agent-chat__share-bar__item:nth-child(2)":
+                    # 第二个item通常是生成图片
+                    elems = await self.page.query_selector_all(item['selector'])
+                    if elems:
+                        gen_btn = elems[0]
+                        logger.info(f"元宝选择第二个分享按钮（通常是生成图片）")
+                        break
+            
+            if not gen_btn and found_items:
+                # 如果没有找到明确的生成图片按钮，使用第一个可见的item
+                elems = await self.page.query_selector_all("div.agent-chat__share-bar__item")
+                if elems:
+                    for elem in elems:
+                        if await elem.is_visible():
+                            gen_btn = elem
+                            text = await elem.text_content()
+                            logger.info(f"元宝使用第一个可见的分享按钮，文本: {text.strip() if text else '未知'}")
+                            break
+            
             if gen_btn:
                 logger.info("元宝准备点击生成图片按钮...")
                 
-                # 点击生成图片按钮
-                clicked_gen = await self._robust_click(gen_btn, "生成图片按钮")
+                # 获取按钮信息
+                try:
+                    btn_text = await gen_btn.text_content()
+                    btn_html = await gen_btn.evaluate("el => el.outerHTML")
+                    btn_box = await gen_btn.bounding_box()
+                    logger.info(f"元宝生成按钮文本: '{btn_text.strip() if btn_text else 'None'}'")
+                    logger.info(f"元宝生成按钮位置: {btn_box}")
+                    logger.debug(f"元宝生成按钮HTML: {btn_html[:300]}")
+                except:
+                    pass
+                
+                # 确保按钮在可视区域
+                try:
+                    await gen_btn.scroll_into_view_if_needed()
+                    await self.page.wait_for_timeout(500)
+                except:
+                    pass
+                
+                # 尝试多种点击方式
+                clicked_gen = False
+                
+                # 方式1: 直接点击生成按钮元素
+                try:
+                    await gen_btn.click(timeout=3000)
+                    logger.info("元宝直接点击生成图片按钮")
+                    clicked_gen = True
+                except Exception as e:
+                    logger.debug(f"直接点击失败: {e}")
+                
+                # 方式2: 如果直接点击失败，尝试点击内部的logo或name元素
                 if not clicked_gen:
-                    logger.error("元宝点击生成图片按钮失败")
+                    try:
+                        # 查找按钮内部的可点击元素
+                        inner_selectors = [
+                            "div.agent-chat__share-bar__item__logo",
+                            "div.agent-chat__share-bar__item__name",
+                            "svg"
+                        ]
+                        for inner_sel in inner_selectors:
+                            inner_elem = await gen_btn.query_selector(inner_sel)
+                            if inner_elem:
+                                await inner_elem.click(timeout=2000)
+                                logger.info(f"元宝点击按钮内部元素: {inner_sel}")
+                                clicked_gen = True
+                                break
+                    except Exception as e:
+                        logger.debug(f"点击内部元素失败: {e}")
+                
+                # 方式3: JavaScript点击
+                if not clicked_gen:
+                    try:
+                        await gen_btn.evaluate("el => el.click()")
+                        logger.info("元宝使用JavaScript点击生成图片按钮")
+                        clicked_gen = True
+                    except Exception as e:
+                        logger.debug(f"JS点击失败: {e}")
+                
+                # 方式4: 坐标点击
+                if not clicked_gen:
+                    try:
+                        box = await gen_btn.bounding_box()
+                        if box:
+                            x = box['x'] + box['width'] / 2
+                            y = box['y'] + box['height'] / 2
+                            await self.page.mouse.click(x, y)
+                            logger.info(f"元宝使用坐标点击生成图片按钮: ({x}, {y})")
+                            clicked_gen = True
+                    except Exception as e:
+                        logger.debug(f"坐标点击失败: {e}")
+                
+                if not clicked_gen:
+                    logger.error("元宝所有点击方式均失败")
                     return await self._default_screenshot(question, answer)
                 
                 logger.info("元宝已点击生成图片按钮，等待图片生成及预览窗口出现...")
-                await self.page.wait_for_timeout(6000)
+                
+                # 增加图片生成等待时间，生成图片可能需要较长时间
+                for wait_time in [3000, 3000, 4000]:
+                    await self.page.wait_for_timeout(wait_time)
+                    
+                    # 检查是否出现图片预览弹窗
+                    try:
+                        preview_modal = await self.page.query_selector("div[class*='preview'], div[class*='modal'], [role='dialog']")
+                        if preview_modal:
+                            logger.info("元宝检测到图片预览弹窗出现")
+                            break
+                    except:
+                        pass
                 
                 # --- 查找并点击下载按钮 ---
                 logger.info("元宝步骤4: 查找并点击下载按钮...")
                 download_btn = None
                 
                 download_selectors = [
+                    # 精准选择器
+                    "div.agent-chat__share-bar__item:has(div:has-text('下载'))",
+                    "div[class*='share-bar'] button:has-text('下载')",
+                    # 通用选择器
                     "div:has-text('下载')",
                     "button:has-text('下载')",
                     "[aria-label*='下载']",
@@ -577,6 +701,16 @@ class YuanbaoAdapter(BaseAdapter):
                         if elem:
                             download_btn = elem
                             logger.info(f"元宝找到下载按钮: {selector}")
+                            
+                            # 获取下载按钮信息
+                            try:
+                                btn_text = await download_btn.text_content()
+                                btn_box = await download_btn.bounding_box()
+                                logger.info(f"元宝下载按钮文本: '{btn_text.strip() if btn_text else 'None'}'")
+                                logger.info(f"元宝下载按钮位置: {btn_box}")
+                            except:
+                                pass
+                            
                             break
                     except Exception as e:
                         logger.debug(f"查找下载按钮失败: {e}")
@@ -584,35 +718,125 @@ class YuanbaoAdapter(BaseAdapter):
                 
                 if download_btn:
                     logger.info("元宝准备点击下载按钮...")
-                    clicked_download = await self._robust_click(download_btn, "下载按钮")
+                    
+                    # 尝试多种点击方式
+                    clicked_download = False
+                    
+                    # 方式1: 直接点击
+                    try:
+                        await download_btn.click(timeout=3000)
+                        logger.info("元宝直接点击下载按钮")
+                        clicked_download = True
+                    except Exception as e:
+                        logger.debug(f"直接点击下载按钮失败: {e}")
+                    
+                    # 方式2: JS点击
+                    if not clicked_download:
+                        try:
+                            await download_btn.evaluate("el => el.click()")
+                            logger.info("元宝JS点击下载按钮")
+                            clicked_download = True
+                        except Exception as e:
+                            logger.debug(f"JS点击下载按钮失败: {e}")
+                    
                     if clicked_download:
-                        logger.info("元宝已点击下载按钮，等待保存...")
-                        await self.page.wait_for_timeout(3000)
+                        logger.info("元宝已点击下载按钮，等待图片下载...")
+                        # 等待下载完成
+                        await self.page.wait_for_timeout(5000)
                     else:
                         logger.warning("元宝点击下载按钮失败")
                 else:
-                    logger.warning("元宝未找到下载按钮，将尝试直接截取预览图")
+                    logger.warning("元宝未找到下载按钮")
                 
                 # --- 尝试截取生成的图片或预览区域 ---
                 logger.info("元宝步骤5: 查找并截取生成的图片...")
+                
+                # 等待图片生成完成
+                await self.page.wait_for_timeout(2000)
+                
+                # 保存调试截图和HTML
+                try:
+                    debug_path = Path("screenshots") / f"yuanbao_gen_debug_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+                    await self.page.screenshot(path=str(debug_path), full_page=True)
+                    logger.info(f"元宝生成调试截图已保存: {debug_path}")
+                except:
+                    pass
+                
                 img_container_selectors = [
-                    "div[class*='photo-view'] img",
+                    # 图片预览窗口中的图片
                     "div[class*='preview'] img",
+                    "div[class*='photo-view'] img",
                     "[role='dialog'] img",
                     ".modal img",
-                    "canvas[class*='share']"
+                    
+                    # canvas截图
+                    "canvas[class*='share']",
+                    "canvas[class*='preview']",
+                    
+                    # 分享弹窗中的图片
+                    "div.agent-chat__share-bar-container img",
+                    "div.agent-chat__share-bar img",
+                    
+                    # 通用选择器
+                    "img[src*='blob:']",
+                    "img[src*='data:image']",
+                    "img[class*='share']",
+                    "img[class*='preview']"
                 ]
                 
                 final_img_elem = None
+                found_images = []
+                
+                # 先收集所有可能的图片元素
                 for sel in img_container_selectors:
                     try:
-                        final_img_elem = await self.page.wait_for_selector(sel, timeout=3000, state="visible")
-                        if final_img_elem:
-                            logger.info(f"元宝找到最终图片元素: {sel}")
-                            break
+                        elems = await self.page.query_selector_all(sel)
+                        if elems:
+                            for elem in elems:
+                                if await elem.is_visible():
+                                    try:
+                                        src = await elem.get_attribute("src")
+                                        box = await elem.bounding_box()
+                                        found_images.append({
+                                            'selector': sel,
+                                            'element': elem,
+                                            'src': src[:100] if src else None,
+                                            'box': box
+                                        })
+                                    except:
+                                        found_images.append({
+                                            'selector': sel,
+                                            'element': elem,
+                                            'src': None,
+                                            'box': None
+                                        })
                     except Exception as e:
                         logger.debug(f"查找图片元素失败: {e}")
                         continue
+                
+                # 打印找到的图片信息
+                if found_images:
+                    logger.info(f"元宝找到 {len(found_images)} 个潜在图片元素:")
+                    for i, img in enumerate(found_images):
+                        logger.info(f"  - [{i}] 选择器: {img['selector']}")
+                        logger.info(f"    src: {img['src']}")
+                        logger.info(f"    位置: {img['box']}")
+                
+                # 选择最可能的图片（优先选择blob或canvas）
+                for img_info in found_images:
+                    if img_info['src'] and ('blob:' in img_info['src'] or 'data:image' in img_info['src']):
+                        final_img_elem = img_info['element']
+                        logger.info(f"元宝选择blob/data图片")
+                        break
+                    elif 'canvas' in img_info['selector']:
+                        final_img_elem = img_info['element']
+                        logger.info(f"元宝选择canvas元素")
+                        break
+                
+                # 如果没有特殊的图片，选择第一个可见的图片
+                if not final_img_elem and found_images:
+                    final_img_elem = found_images[0]['element']
+                    logger.info("元宝选择第一个可见图片")
                 
                 if final_img_elem:
                     await self.page.wait_for_timeout(1000)
@@ -637,6 +861,13 @@ class YuanbaoAdapter(BaseAdapter):
                         return await self._default_screenshot(question, answer)
                 else:
                     logger.warning("元宝点击了生成/下载按钮但未检测到结果图片")
+                    # 保存无图片时的调试信息
+                    try:
+                        debug_path = Path("screenshots") / f"yuanbao_no_image_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+                        await self.page.screenshot(path=str(debug_path), full_page=True)
+                        logger.info(f"元宝无图片调试截图已保存: {debug_path}")
+                    except:
+                        pass
                     return await self._default_screenshot(question, answer)
             else:
                 logger.warning("元宝未找到生成图片按钮，直接使用默认截图")
