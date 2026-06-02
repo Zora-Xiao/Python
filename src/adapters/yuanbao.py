@@ -448,27 +448,99 @@ class YuanbaoAdapter(BaseAdapter):
             
             await self.page.wait_for_timeout(1500) 
 
-            # --- 查找生成/保存图片按钮 ---
+            # --- 等待分享弹窗出现并查找生成图片按钮 ---
+            # 根据提供的HTML结构：
+            # <div class="agent-chat__share-bar-container">
+            #   <div class="agent-chat__share-bar">
+            #     <div class="agent-chat__share-bar__content">
+            #       <div class="agent-chat__share-bar__content__center">
+            #         <div class="agent-chat__share-bar__item">...</div>
+            #         <div class="agent-chat__share-bar__item">
+            #           <div class="agent-chat__share-bar__item__logo"><svg>...</svg></div>
+            #           <div class="agent-chat__share-bar__item__name">生成图片</div>
+            #         </div>
+            #       </div>
+            #     </div>
+            #   </div>
+            # </div>
+            
+            logger.info("元宝等待分享弹窗出现...")
+            share_bar_container = None
+            try:
+                share_bar_container = await self.page.wait_for_selector(
+                    "div.agent-chat__share-bar-container", 
+                    timeout=5000, 
+                    state="visible"
+                )
+                logger.info("元宝分享弹窗已出现")
+            except Exception as e:
+                logger.warning(f"元宝分享弹窗未出现: {e}")
+                # 尝试查找是否有其他形式的分享弹窗
+                alternative_containers = [
+                    "div[class*='share-bar']",
+                    "[role='dialog'][class*='share']"
+                ]
+                for alt_sel in alternative_containers:
+                    try:
+                        share_bar_container = await self.page.wait_for_selector(alt_sel, timeout=2000, state="visible")
+                        if share_bar_container:
+                            logger.info(f"元宝找到备选分享弹窗: {alt_sel}")
+                            break
+                    except:
+                        continue
+            
+            if not share_bar_container:
+                logger.warning("元宝未找到分享弹窗，执行默认截图")
+                return await self._default_screenshot(question, answer)
+            
+            # --- 查找生成图片按钮 ---
             logger.info("元宝步骤3: 查找生成图片按钮...")
             gen_btn = None
             
-            # 根据常见分享弹窗结构查找生成图片按钮
+            # 根据提供的HTML结构，生成图片按钮的精准选择器
             gen_btn_selectors = [
-                "div:has-text('生成图片')",
-                "button:has-text('生成图片')",
-                "div[class*='share-bar'] div:has-text('生成图片')",
-                "[aria-label*='生成图片']"
+                # 1. 最精准：基于完整结构路径
+                "div.agent-chat__share-bar__content__center .agent-chat__share-bar__item:has(div.agent-chat__share-bar__item__name:has-text('生成图片'))",
+                
+                # 2. 基于按钮名称文本查找
+                "div.agent-chat__share-bar__item__name:has-text('生成图片')",
+                
+                # 3. 查找包含生成图片文本的item项（备用）
+                "div.agent-chat__share-bar__item:has-text('生成图片')",
+                
+                # 4. 基于SVG特征（第二个SVG的path特征）
+                "div.agent-chat__share-bar__item:has(svg path[d*='M2.5 5C2.5 4.44771'])",
+                
+                # 5. 更通用的选择器（备用）
+                "div[class*='share-bar__item']:has(div:has-text('生成图片'))"
             ]
             
             for selector in gen_btn_selectors:
                 try:
+                    logger.debug(f"元宝尝试生成图片按钮选择器: {selector}")
                     elems = await self.page.query_selector_all(selector)
                     if elems:
                         for elem in elems:
                             if await elem.is_visible():
-                                gen_btn = elem
-                                logger.info(f"元宝找到生成图片按钮: {selector}")
-                                break
+                                # 验证按钮内容
+                                try:
+                                    button_text = await elem.text_content()
+                                    if button_text and '生成图片' in button_text:
+                                        logger.info(f"元宝找到生成图片按钮: {selector}")
+                                        gen_btn = elem
+                                        break
+                                    elif selector == "div.agent-chat__share-bar__item__name:has-text('生成图片')":
+                                        # 如果找到的是name元素，获取其父级item
+                                        parent_item = await elem.evaluate("el => el.parentElement")
+                                        if parent_item:
+                                            gen_btn = parent_item
+                                            logger.info(f"元宝找到生成图片按钮（通过name元素）")
+                                            break
+                                except:
+                                    # 验证失败时直接使用找到的元素
+                                    gen_btn = elem
+                                    logger.info(f"元宝找到生成图片按钮: {selector}")
+                                    break
                         if gen_btn:
                             break
                 except Exception as e:
