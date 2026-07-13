@@ -51,6 +51,34 @@ class DeepseekAdapter(BaseAdapter):
         except Exception as e:
             logger.error(f"{self.name} 自动登录过程错误: {str(e)}")
 
+        try:
+            navigate_url = self.login_url if self.login_url else self.platform_url
+            if navigate_url:
+                logger.info(f"{self.name} 导航到: {navigate_url}")
+                await self.page.goto(navigate_url, wait_until="domcontentloaded", timeout=60000)
+            else:
+                logger.warning(f"{self.name} 未配置login_url或platform_url，无法导航")
+                return
+
+            if self.username and self.password:
+                logger.info(f"{self.name} 开始自动登录...")
+                if await self._execute_login():
+                    await self.page.wait_for_timeout(3000)
+                    if await self._check_login_status():
+                        logger.info(f"{self.name} 自动登录成功")
+                        await self._save_cookies(self.page.context)
+                        logger.info(f"{self.name} cookies已保存（即使可能无法使用）")
+                        return
+                    else:
+                        logger.warning(f"{self.name} 自动登录后未检测到登录状态")
+                else:
+                    logger.warning(f"{self.name} 自动登录失败")
+            else:
+                logger.warning(f"{self.name} 未配置用户名和密码，无法自动登录")
+
+        except Exception as e:
+            logger.error(f"{self.name} 自动登录过程错误: {str(e)}")
+
     async def _execute_login(self) -> bool:
         try:
             logger.info("Deepseek 开始登录过程...")
@@ -422,7 +450,7 @@ class DeepseekAdapter(BaseAdapter):
             stable_count = 0
             stable_threshold = 3  # 需要连续3秒文本不变才算完成
             
-            for i in range(max_wait):
+            for _ in range(max_wait):
                 current_text = ""
                 for sel in answer_selectors:
                     try:
@@ -462,7 +490,7 @@ class DeepseekAdapter(BaseAdapter):
             logger.error(f"Deepseek 获取回答失败: {str(e)}")
             return ""
 
-    async def screenshot(self, question: Question, answer: str) -> tuple[Optional[str], bool, Optional[str]]:
+    async def screenshot(self, question: Question) -> tuple[Optional[str], bool, Optional[str]]:
         try:
             logger.info("deepseek 等待AI回复完全完成...")
             await self.page.wait_for_timeout(5000)  # 等待5秒确保回复彻底完成
@@ -502,7 +530,7 @@ class DeepseekAdapter(BaseAdapter):
             except Exception as e:
                 logger.debug(f"deepseek 查找消息区域失败: {str(e)}")
             
-            for i in range(max_wait):
+            for _ in range(max_wait):
                 # 查找所有可能的按钮元素
                 all_elements = await self.page.query_selector_all("div[role='button'], .ds-icon-button, button")
                 for elem in all_elements:
@@ -721,9 +749,9 @@ class DeepseekAdapter(BaseAdapter):
 
         except Exception as e:
             logger.error(f"deepseek 截图失败: {str(e)}")
-            return await self._default_screenshot(question, answer)
+            return await self._default_screenshot(question)
 
-    async def _default_screenshot(self, question: Question, answer: str) -> tuple[Optional[str], bool, Optional[str]]:
+    async def _default_screenshot(self, question: Question) -> tuple[Optional[str], bool, Optional[str]]:
         try:
             from datetime import datetime
             from pathlib import Path

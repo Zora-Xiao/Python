@@ -8,7 +8,7 @@ import json
 import asyncio
 import os
 
-# 设置环境变量解决EPIPE问题（Node.js v24与Playwright兼容性问题）
+# 解决连接中断EPIPE问题（Node.js v24与Playwright兼容性问题）
 os.environ.setdefault('PLAYWRIGHT_TRANSPORT', 'websocket')
 
 
@@ -30,7 +30,7 @@ class BaseAdapter(ABC):
         self.password = self.credentials.get("password", config.get("password", ""))
         self.cookies_dir = Path("cookies")
         self.cookies_dir.mkdir(parents=True, exist_ok=True)
-        self._browser_lock = asyncio.Lock()  # 添加锁机制
+        self._browser_lock = asyncio.Lock()  # 浏览器锁
     
     async def _get_browser(self) -> Browser:
         async with self._browser_lock:
@@ -40,7 +40,7 @@ class BaseAdapter(ABC):
             else:
                 try:
                     if not self.browser.is_connected:
-                        logger.warning(f"{self.name}浏览器已断开，需要重建")
+                        logger.warning(f"{self.name}浏览器连接断开，需要重建")
                         should_recreate = True
                 except Exception:
                     should_recreate = True
@@ -68,19 +68,55 @@ class BaseAdapter(ABC):
                 if self.browser is None:
                     if self.playwright is None:
                         self.playwright = await async_playwright().start()
+                    
+                    # 更完善的反检测参数
+                    launch_args = [
+                        '--disable-blink-features=AutomationControlled',
+                        '--disable-dev-shm-usage',
+                        '--no-sandbox',
+                        '--disable-infobars',
+                        '--disable-background-networking',
+                        '--disable-breakpad',
+                        '--disable-component-update',
+                        '--disable-default-apps',
+                        '--disable-extensions',
+                        '--disable-sync',
+                        '--metrics-recording-only',
+                        '--no-first-run',
+                        '--disable-features=IsolateOrigins,site-per-process',
+                        '--enable-features=NetworkService,NetworkServiceInProcess',
+                        '--window-size=1920,1080',
+                        '--start-maximized',
+                    ]
+                    
+                    logger.info(f"{self.name}正在启动浏览器...")
                     self.browser = await self.playwright.chromium.launch(
                         headless=False,
-                        args=['--disable-blink-features=AutomationControlled',
-                              '--disable-dev-shm-usage',
-                              '--no-sandbox']
+                        args=launch_args
                     )
+                    logger.info(f"{self.name}浏览器进程已启动")
+                    
                     context = await self.browser.new_context(
                         viewport={'width': 1920, 'height': 1080},
-                        user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                        user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                        locale='zh-CN',
+                        timezone_id='Asia/Shanghai',
                     )
+                    logger.info(f"{self.name}浏览器上下文已创建")
+                    
                     await self._load_cookies(context)
                     self.page = await context.new_page()
-                    logger.info(f"{self.name}浏览器已重建")
+                    
+                    # 监听页面关闭事件
+                    self.page.on("close", lambda: logger.warning(f"{self.name}页面被关闭了！"))
+                    
+                    # 监听页面错误事件
+                    self.page.on("pageerror", lambda err: logger.error(f"{self.name}页面错误: {err}"))
+                    
+                    # 监听页面崩溃事件
+                    self.page.on("crash", lambda: logger.error(f"{self.name}页面崩溃了！"))
+                    
+                    logger.info(f"{self.name}浏览器启动完成，页面状态: is_closed={self.page.is_closed()}")
                 elif self.page is None or page_is_valid is False:
                     try:
                         context = await self.browser.new_context(
@@ -134,12 +170,12 @@ class BaseAdapter(ABC):
             logged_in = await self._check_login_status()
             return logged_in
         except Exception as e:
-            logger.warning(f"{self.name}检测登录状态失败：{str(e)}")
+            logger.warning(f"{self.name}检查登录状态失败：{str(e)}")
             return False
     
     async def _check_login_status(self) -> bool:
         try:
-            # 不重新导航，直接检查当前页面状态
+            # 等待页面加载后再检查当前页面状态
             await self.page.wait_for_timeout(1000)
             
             logout_selectors = [
@@ -159,7 +195,7 @@ class BaseAdapter(ABC):
                     if elems:
                         for elem in elems:
                             if await elem.is_visible():
-                                logger.info(f"{self.name}已登录（找到元素: {selector}）")
+                                logger.info(f"{self.name}已登录，找到元素: {selector}")
                                 return True
                 except Exception as e:
                     logger.debug(f"{self.name}检查选择器 {selector} 失败: {str(e)}")
@@ -182,13 +218,13 @@ class BaseAdapter(ABC):
                     if elems:
                         for elem in elems:
                             if await elem.is_visible():
-                                logger.info(f"{self.name}未登录（找到登录按钮: {selector}）")
+                                logger.info(f"{self.name}未登录，找到登录按钮: {selector}")
                                 return False
                 except Exception as e:
                     logger.debug(f"{self.name}检查选择器 {selector} 失败: {str(e)}")
                     continue
             
-            # 如果都没找到，检查是否有输入框（通常登录后才有输入框）
+            # 如果没有找到明显的登录/退出按钮，可以尝试检查输入框是否可用（通常登录后才可用）
             input_selectors = ["textarea", "input[type='text']", "[role='textbox']", "[contenteditable='true']"]
             for selector in input_selectors:
                 try:
@@ -196,7 +232,7 @@ class BaseAdapter(ABC):
                     if elems:
                         for elem in elems:
                             if await elem.is_visible():
-                                logger.info(f"{self.name}已登录（找到输入框）")
+                                logger.info(f"{self.name}已登录，找到输入框")
                                 return True
                 except:
                     continue
@@ -234,6 +270,145 @@ class BaseAdapter(ABC):
             logger.error(f"{self.name}自动登录异常：{str(e)}")
             return False
     
+    # ==================== 公共辅助方法 ====================
+    
+    async def _find_visible_element(self, selectors: list) -> Optional[Any]:
+        """
+        查找第一个可见的元素
+        
+        Args:
+            selectors: CSS选择器列表
+            
+        Returns:
+            找到的元素对象或未找到时返回None
+        """
+        for selector in selectors:
+            try:
+                elements = await self.page.query_selector_all(selector)
+                if elements:
+                    for elem in elements:
+                        if await elem.is_visible():
+                            return elem
+            except Exception:
+                continue
+        return None
+    
+    async def _fill_form_field(self, field_selectors: list, value: str) -> bool:
+        """
+        填写表单字段
+        
+        Args:
+            field_selectors: 字段选择器列表
+            value: 要填写的值
+            
+        Returns:
+            是否成功填写
+        """
+        try:
+            elem = await self._find_visible_element(field_selectors)
+            if elem:
+                await elem.fill(value)
+                await self.page.wait_for_timeout(500)
+                return True
+            return False
+        except Exception as e:
+            logger.debug(f"{self.name} 填写字段失败: {str(e)}")
+            return False
+    
+    async def _click_button(self, button_selectors: list) -> bool:
+        """
+        点击按钮
+        
+        Args:
+            button_selectors: 按钮选择器列表
+            
+        Returns:
+            是否成功点击
+        """
+        try:
+            elem = await self._find_visible_element(button_selectors)
+            if elem:
+                await elem.click()
+                return True
+            return False
+        except Exception as e:
+            logger.debug(f"{self.name} 点击按钮失败: {str(e)}")
+            return False
+    
+    async def _robust_click(self, element, description: str = "element") -> bool:
+        """
+        多种方式尝试点击元素，确保成功率
+        
+        Args:
+            element: 要点击的元素
+            description: 元素描述，用于日志标识
+            
+        Returns:
+            是否成功点击
+        """
+        if not element:
+            return False
+        
+        # 1. 滚动到视图
+        try:
+            await element.scroll_into_view_if_needed()
+            await self.page.wait_for_timeout(500)
+        except:
+            pass
+        
+        # 2. 尝试JS点击，如果可能
+        try:
+            await element.evaluate("el => el.click()")
+            logger.debug(f"{self.name} JS点击 {description} 成功")
+            return True
+        except Exception:
+            pass
+        
+        # 3. 尝试Playwright强制点击
+        try:
+            await element.click(force=True, timeout=3000)
+            logger.debug(f"{self.name} 强制点击 {description} 成功")
+            return True
+        except Exception:
+            pass
+        
+        # 4. 尝试坐标点击
+        try:
+            box = await element.bounding_box()
+            if box:
+                x = box['x'] + box['width'] / 2
+                y = box['y'] + box['height'] / 2
+                await self.page.mouse.click(x, y)
+                logger.debug(f"{self.name} 坐标点击 {description} 成功")
+                return True
+        except Exception:
+            pass
+        
+        logger.warning(f"{self.name} 所有点击方式失败: {description}")
+        return False
+    
+    async def _wait_for_element_with_text(self, selectors: list, timeout: int = 5000) -> Optional[Any]:
+        """
+        等待包含特定文本的元素
+        
+        Args:
+            selectors: 选择器列表
+            timeout: 超时时间
+            
+        Returns:
+            找到的元素或None
+        """
+        for selector in selectors:
+            try:
+                elem = await self.page.wait_for_selector(selector, timeout=timeout)
+                if elem and await elem.is_visible():
+                    return elem
+            except Exception:
+                continue
+        return None
+    
+    # ==================== 抽象方法 ====================
+    
     @abstractmethod
     async def _execute_login(self) -> bool:
         pass
@@ -260,7 +435,7 @@ class BaseAdapter(ABC):
             # 导航到聊天页面
             logger.info(f"{self.name}步骤2: 导航到聊天页面")
             if not await self._navigate_to_chat():
-                return "无法导航到对话页面", "error"
+                return "无法进入对话页面", "error"
             
             # 检查是否需要登录，如果需要则等待用户手动登录
             if self.login_required:
@@ -272,29 +447,42 @@ class BaseAdapter(ABC):
             # 检查页面是否仍然有效
             page_is_closed = self.page.is_closed() if self.page else True
             if not self.page or page_is_closed:
-                logger.error(f"{self.name}页面已关闭，无法发送消息")
+                logger.error(f"{self.name}页面已关闭，无法继续操作")
                 return f"{self.name}页面已关闭", "error"
             
             # 记录页面状态
             logger.info(f"{self.name}页面状态检查: URL={self.page.url}, 已关闭={page_is_closed}")
             
-            # 尝试发送消息
+            # 发送问题并获取回答
             logger.info(f"{self.name}步骤4: 发送消息并获取回答")
             answer = await self._send_message_and_get_answer(question.text)
             logger.info(f"{self.name}步骤5: 获取回答成功，长度: {len(answer)}")
             return answer, "success"
             
         except Exception as e:
-            logger.error(f"{self.name}适配器错误: {str(e)}")
-            return f"请求异常：{str(e)}", "error"
+            logger.error(f"{self.name}提问失败: {str(e)}")
+            return f"提问失败: {str(e)}", "error"
     
     async def _ensure_logged_in(self) -> bool:
-        """确保用户已登录，如果未登录则尝试自动登录，失败后等待手动登录"""
+        """确保用户已登录，如果未登录则尝试自动登录，失败则等待手动登录"""
         try:
-            # 先检查是否已登录（通过检测输入框）
+            # 先检查页面是否有效
+            if not self.page or self.page.is_closed():
+                logger.error(f"{self.name}页面已关闭，无法检查登录状态")
+                return False
+            
+            logger.info(f"{self.name}当前页面URL: {self.page.url}")
+            
+            # 先检查是否已登录（通过查找输入框）
+            logger.info(f"{self.name}开始检查登录状态...")
             if await self._check_if_logged_in_with_input():
-                logger.info(f"{self.name}已登录（检测到输入框）")
+                logger.info(f"{self.name}已登录，找到输入框")
                 return True
+            
+            # 再次检查页面是否有效
+            if not self.page or self.page.is_closed():
+                logger.error(f"{self.name}检查登录状态后页面已关闭")
+                return False
             
             # 尝试自动登录
             if self.username and self.password:
@@ -309,24 +497,29 @@ class BaseAdapter(ABC):
                         return True
                     else:
                         page_is_closed = self.page.is_closed() if self.page else True
-                        logger.warning(f"{self.name}自动登录后仍未检测到登录状态，页面状态: URL={self.page.url}, 已关闭={page_is_closed}")
+                        logger.warning(f"{self.name}自动登录后未检测到登录状态，页面状态: URL={self.page.url}, 已关闭={page_is_closed}")
             
             # 自动登录失败或未配置账号密码，等待手动登录
-            logger.info(f"=" * 50)
-            logger.info(f"🔴 {self.name}需要登录")
-            logger.info(f"💡 请在弹出的浏览器窗口中完成登录")
-            logger.info(f"⏳ 等待登录完成（最多等待120秒）")
-            logger.info(f"💡 登录完成后请保持浏览器窗口打开")
-            logger.info(f"=" * 50)
+            logger.info("=" * 50)
+            logger.info(f"? {self.name}需要登录")
+            logger.info("? 请在打开的浏览器中完成登录")
+            logger.info("? 等待登录完成（最多等待120秒）")
+            logger.info("? 登录完成后请保持浏览器窗口打开")
+            logger.info("=" * 50)
             
             # 等待用户手动登录，每2秒检查一次
             for i in range(60):
                 try:
                     # 检查页面是否还存在
-                    if not self.page or self.page.is_closed:
-                        logger.warning(f"{self.name}页面已关闭")
+                    if not self.page:
+                        logger.warning(f"{self.name}页面对象不存在")
                         return False
                     
+                    if self.page.is_closed():
+                        logger.warning(f"{self.name}页面已关闭（循环第{i}次检查）")
+                        return False
+                    
+                    logger.info(f"{self.name}等待登录中... ({i+1}/60)")
                     await self.page.wait_for_timeout(2000)
                     
                     # 检查是否已登录
@@ -336,26 +529,37 @@ class BaseAdapter(ABC):
                         return True
                         
                 except Exception as e:
-                    logger.debug(f"{self.name}登录检查中出错: {str(e)}")
+                    logger.warning(f"{self.name}登录检查中错误: {str(e)}")
+                    # 检查页面是否仍然有效
+                    if not self.page or self.page.is_closed():
+                        logger.warning(f"{self.name}异常后页面已关闭")
+                        return False
                     continue
             
-            logger.warning(f"{self.name}登录超时，继续尝试...")
+            logger.warning(f"{self.name}登录超时，继续执行...")
             return False
             
         except Exception as e:
-            logger.warning(f"{self.name}登录检查失败: {str(e)}")
+            logger.warning(f"{self.name}登录处理失败: {str(e)}")
             return False
     
     async def _check_if_logged_in_with_input(self) -> bool:
-        """通过检测聊天输入框是否可用来判断是否已登录（排除登录页面的输入框）"""
+        """通过检测页面是否有输入框来判断是否已登录（有输入框表示已进入聊天页）"""
         try:
+            # 先检查页面是否有效
+            if not self.page or self.page.is_closed():
+                logger.warning(f"{self.name}页面已关闭，无法检查登录状态")
+                return False
+            
             await self.page.wait_for_timeout(1000)
             
-            # 先检查是否在登录页面（有登录按钮或密码输入框）
+            logger.info(f"{self.name}检查登录状态，当前URL: {self.page.url}")
+            
+            # 先检查是否在登录页面（有登录按钮、用户名输入框等）
             login_indicators = [
                 "button:has-text('登录')",
                 "button:has-text('Login')",
-                "[placeholder*='邮箱']",
+                "[placeholder*='用户名']",
                 "[placeholder*='密码']",
                 "[placeholder*='username']",
                 "[placeholder*='password']",
@@ -367,56 +571,77 @@ class BaseAdapter(ABC):
             has_login_indicator = False
             for selector in login_indicators:
                 try:
+                    # 检查页面是否仍然有效
+                    if not self.page or self.page.is_closed():
+                        logger.warning(f"{self.name}在检查选择器 {selector} 时页面已关闭")
+                        return False
+                    
                     elems = await self.page.query_selector_all(selector)
                     if elems:
                         for elem in elems:
                             if await elem.is_visible():
                                 has_login_indicator = True
-                                logger.debug(f"{self.name}检测到登录页面元素: {selector}")
+                                logger.info(f"{self.name}检测到登录页面元素: {selector}")
                                 break
                         if has_login_indicator:
                             break
                 except Exception as e:
-                    logger.debug(f"{self.name}检查登录指示器失败: {str(e)}")
+                    logger.debug(f"{self.name}检测登录指示器失败: {str(e)}")
+                    # 检查页面是否仍然有效
+                    if not self.page or self.page.is_closed():
+                        logger.warning(f"{self.name}检测登录指示器异常后页面已关闭")
+                        return False
                     continue
             
             # 如果检测到登录页面元素，判定为未登录
             if has_login_indicator:
-                logger.debug(f"{self.name}检测到登录页面，判定为未登录")
+                logger.info(f"{self.name}检测到登录页面，判定为未登录")
                 return False
             
-            # 再检查聊天输入框（已登录状态）
+            # 检查页面是否仍然有效
+            if not self.page or self.page.is_closed():
+                logger.warning(f"{self.name}在检查聊天输入框前页面已关闭")
+                return False
+            
+            # 再检测聊天输入框来确认登录状态
             chat_input_selectors = [
                 "textarea",
                 "[role='textbox']",
                 "[contenteditable='true']",
                 ".chat-input",
                 ".message-input",
-                "textarea[placeholder*='输入']",
                 "textarea[placeholder*='提问']",
+                "textarea[placeholder*='聊天']",
                 "textarea[placeholder*='Message']",
             ]
             
             for selector in chat_input_selectors:
                 try:
+                    # 检查页面是否仍然有效
+                    if not self.page or self.page.is_closed():
+                        logger.warning(f"{self.name}在检查选择器 {selector} 时页面已关闭")
+                        return False
+                    
                     elems = await self.page.query_selector_all(selector)
                     if elems:
                         for elem in elems:
                             if await elem.is_visible():
-                                # 检查这个输入框是否是聊天输入框（不是登录输入框）
-                                placeholder = await self.page.evaluate('(el) => el.placeholder || ""', elem)
-                                # 如果没有登录页面的特征，且有输入框，则判定为已登录
+                                # 如果检测到输入框且不在登录页面，则判定为已登录
                                 if not has_login_indicator:
                                     logger.info(f"{self.name}检测到聊天输入框，判定为已登录")
                                     return True
                 except Exception as e:
-                    logger.debug(f"{self.name}检查输入框 {selector} 失败: {str(e)}")
+                    logger.debug(f"{self.name}检测选择器 {selector} 失败: {str(e)}")
+                    # 检查页面是否仍然有效
+                    if not self.page or self.page.is_closed():
+                        logger.warning(f"{self.name}检测选择器异常后页面已关闭")
+                        return False
                     continue
             
-            logger.debug(f"{self.name}未找到明确的登录状态标识")
+            logger.info(f"{self.name}未找到确定的登录状态标识")
             return False
         except Exception as e:
-            logger.debug(f"{self.name}检查登录状态失败: {str(e)}")
+            logger.warning(f"{self.name}检测登录状态失败: {str(e)}")
             return False
     
     async def _send_message_and_get_answer(self, question: str) -> str:
@@ -425,9 +650,9 @@ class BaseAdapter(ABC):
         answer = await self._get_answer()
         return answer
     
-    async def screenshot(self, question: Question, answer: str) -> tuple[Optional[str], bool, Optional[str]]:
+    async def screenshot(self, question: Question) -> tuple[Optional[str], bool, Optional[str]]:
         """
-        截图方法，优先尝试下载分享图片
+        截图方法，尝试获取分享图片或截图
         返回：(图片路径, 是否为分享图片, 分享链接)
         """
         if self.page is None:
@@ -461,7 +686,7 @@ class BaseAdapter(ABC):
                     "share_link": None,
                     "error_message": answer
                 }
-            screenshot_path, is_shared_image, share_link = await self.screenshot(question, answer)
+            screenshot_path, is_shared_image, share_link = await self.screenshot(question)
             
             return {
                 "answer": answer,

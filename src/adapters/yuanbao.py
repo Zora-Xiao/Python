@@ -3,24 +3,6 @@ from typing import Optional
 from src.adapters.base import BaseAdapter
 from src.models.question import Question
 from src.utils.logger import logger
-import requests
-import json
-from pathlib import Path
-from datetime import datetime
-
-#region debug-point instrumentation
-def report_debug_log(event: str, message: str, data: dict = None):
-    """Report debug log to Debug Server"""
-    try:
-        log_entry = {
-            'event': event,
-            'message': message,
-            'data': data or {}
-        }
-        requests.post('http://localhost:9527/log', json=log_entry, timeout=1)
-    except:
-        pass  # Silently fail if Debug Server is not available
-#endregion
 
 
 class YuanbaoAdapter(BaseAdapter):
@@ -31,99 +13,59 @@ class YuanbaoAdapter(BaseAdapter):
     
     async def _execute_login(self) -> bool:
         try:
+            logger.info(f"{self.platform_id} 开始登录...")
+
             login_button_selectors = [
                 "button:has-text('login')",
                 "button:has-text('Sign In')",
                 "[data-testid='login']",
                 ".login-btn"
             ]
-            
-            login_button = None
-            for selector in login_button_selectors:
-                try:
-                    await self.page.wait_for_selector(selector, timeout=5000)
-                    login_button = selector
-                    break
-                except:
-                    continue
-            
+
+            login_button = await self._find_visible_element(login_button_selectors)
             if not login_button:
-                logger.warning("元宝登录按钮未找到")
+                logger.warning(f"{self.platform_id} 登录按钮未找到")
                 return False
-            
-            await self.page.click(login_button)
+
+            await login_button.click()
             await self.page.wait_for_timeout(2000)
-            
+
             username_selectors = [
                 "input[name='username']",
                 "input[name='email']",
                 "input[name='phone']",
                 "input[type='text']"
             ]
-            
-            username_selector = None
-            for selector in username_selectors:
-                try:
-                    await self.page.wait_for_selector(selector, timeout=3000)
-                    username_selector = selector
-                    break
-                except:
-                    continue
-            
-            if username_selector:
-                await self.page.fill(username_selector, self.username)
-                await self.page.wait_for_timeout(500)
-            else:
-                logger.warning("元宝用户名输入框未找到")
+
+            if not await self._fill_form_field(username_selectors, self.username):
+                logger.warning(f"{self.platform_id} 用户名输入框未找到")
                 return False
-            
+
             password_selectors = [
                 "input[name='password']",
                 "input[type='password']"
             ]
-            
-            password_selector = None
-            for selector in password_selectors:
-                try:
-                    await self.page.wait_for_selector(selector, timeout=3000)
-                    password_selector = selector
-                    break
-                except:
-                    continue
-            
-            if password_selector:
-                await self.page.fill(password_selector, self.password)
-                await self.page.wait_for_timeout(500)
-            else:
-                logger.warning("元宝密码输入框未找到")
+
+            if not await self._fill_form_field(password_selectors, self.password):
+                logger.warning(f"{self.platform_id} 密码输入框未找到")
                 return False
-            
+
             submit_selectors = [
                 "button[type='submit']",
                 "button:has-text('login')",
                 "button:has-text('submit')",
                 ".submit-btn"
             ]
-            
-            submit_selector = None
-            for selector in submit_selectors:
-                try:
-                    await self.page.wait_for_selector(selector, timeout=3000)
-                    submit_selector = selector
-                    break
-                except:
-                    continue
-            
-            if submit_selector:
-                await self.page.click(submit_selector)
+
+            if await self._click_button(submit_selectors):
                 await self.page.wait_for_timeout(5000)
-                logger.info("元宝登录成功")
+                logger.info(f"{self.platform_id} 登录成功")
             else:
-                logger.warning("元宝提交按钮未找到")
-            
+                logger.warning(f"{self.platform_id} 提交按钮未找到")
+
             return True
         except Exception as e:
-            logger.error(f"元宝登录失败：{str(e)}")
+            logger.error(f"{self.platform_id} 登录失败：{str(e)}")
             return False
     
     async def _navigate_to_chat(self) -> bool:
@@ -146,29 +88,21 @@ class YuanbaoAdapter(BaseAdapter):
                 "div[contenteditable='true']",
                 "[role='textbox']"
             ]
-            
-            input_selector = None
-            for selector in input_selectors:
-                try:
-                    await self.page.wait_for_selector(selector, timeout=10000)
-                    input_selector = selector
-                    break
-                except:
-                    continue
-            
-            if not input_selector:
+
+            input_elem = await self._find_visible_element(input_selectors)
+            if not input_elem:
                 raise Exception("输入框未找到")
-            
-            await self.page.click(input_selector)
+
+            await input_elem.click()
             await self.page.wait_for_timeout(500)
-            await self.page.fill(input_selector, question)
+            await input_elem.fill(question)
             await self.page.wait_for_timeout(500)
-            await self.page.press(input_selector, "Enter")
-            
-            logger.info(f"元宝发送消息：{question[:30]}...")
-            
+            await input_elem.press("Enter")
+
+            logger.info(f"{self.platform_id} 发送消息：{question[:30]}...")
+
         except Exception as e:
-            logger.error(f"元宝发送消息失败：{str(e)}")
+            logger.error(f"{self.platform_id} 发送消息失败：{str(e)}")
             raise
     
     async def _get_answer(self) -> str:
@@ -367,7 +301,7 @@ class YuanbaoAdapter(BaseAdapter):
                     continue
             return None
     
-    async def screenshot(self, question: Question, answer: str) -> tuple[Optional[str], bool, Optional[str]]:
+    async def screenshot(self, question: Question) -> tuple[Optional[str], bool, Optional[str]]:
         if self.page is None:
             return None, False, None
         
@@ -436,7 +370,7 @@ class YuanbaoAdapter(BaseAdapter):
                 debug_path = Path("screenshots") / f"yuanbao_debug_no_btn_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
                 await self.page.screenshot(path=str(debug_path), full_page=True)
                 logger.info(f"元宝调试截图已保存: {debug_path}")
-                return await self._default_screenshot(question, answer)
+                return await self._default_screenshot(question)
             
             logger.info(f"元宝成功定位分享按钮，准备点击...")
             
@@ -453,7 +387,7 @@ class YuanbaoAdapter(BaseAdapter):
             clicked = await self._robust_click(share_btn, "分享按钮")
             if not clicked:
                 logger.warning("元宝点击分享按钮失败，执行默认截图")
-                return await self._default_screenshot(question, answer)
+                return await self._default_screenshot(question)
             
             await self.page.wait_for_timeout(1500) 
 
@@ -487,7 +421,7 @@ class YuanbaoAdapter(BaseAdapter):
                     logger.info(f"元宝无弹窗调试截图已保存: {debug_path}")
                 except:
                     pass
-                return await self._default_screenshot(question, answer)
+                return await self._default_screenshot(question)
             
             # 获取弹窗的HTML用于调试
             try:
@@ -662,7 +596,7 @@ class YuanbaoAdapter(BaseAdapter):
                 
                 if not clicked_gen:
                     logger.error("元宝所有点击方式均失败")
-                    return await self._default_screenshot(question, answer)
+                    return await self._default_screenshot(question)
                 
                 logger.info("元宝已点击生成图片按钮，等待图片生成及预览窗口出现...")
                 
@@ -855,10 +789,10 @@ class YuanbaoAdapter(BaseAdapter):
                             return str(file_path), True, None
                         else:
                             logger.warning(f"元宝分享图片文件无效，回退到默认截图")
-                            return await self._default_screenshot(question, answer)
+                            return await self._default_screenshot(question)
                     except Exception as screenshot_err:
                         logger.error(f"元宝截取图片元素失败: {str(screenshot_err)}")
-                        return await self._default_screenshot(question, answer)
+                        return await self._default_screenshot(question)
                 else:
                     logger.warning("元宝点击了生成/下载按钮但未检测到结果图片")
                     # 保存无图片时的调试信息
@@ -868,20 +802,18 @@ class YuanbaoAdapter(BaseAdapter):
                         logger.info(f"元宝无图片调试截图已保存: {debug_path}")
                     except:
                         pass
-                    return await self._default_screenshot(question, answer)
+                    return await self._default_screenshot(question)
             else:
                 logger.warning("元宝未找到生成图片按钮，直接使用默认截图")
-                return await self._default_screenshot(question, answer)
-
-            return await self._default_screenshot(question, answer)
+                return await self._default_screenshot(question)
 
         except Exception as e:
             logger.error(f"元宝截图流程异常: {str(e)}")
             import traceback
             logger.error(traceback.format_exc())
-            return await self._default_screenshot(question, answer)
+            return await self._default_screenshot(question)
 
-    async def _default_screenshot(self, question: Question, answer: str) -> tuple[Optional[str], bool, Optional[str]]:
+    async def _default_screenshot(self, question: Question) -> tuple[Optional[str], bool, Optional[str]]:
         try:
             from src.utils.screenshot import ScreenshotTool
             screenshot_tool = ScreenshotTool()

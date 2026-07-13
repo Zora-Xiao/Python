@@ -11,6 +11,21 @@ class ErnieAdapter(BaseAdapter):
         self.platform_id = "ernie"
         self.platform_url = config.get("web_url", "https://yiyan.baidu.com/")
 
+    async def _find_visible_element(self, selectors: list) -> Optional[object]:
+        """
+        辅助方法：查找第一个可见的元素
+        """
+        for selector in selectors:
+            try:
+                elements = await self.page.query_selector_all(selector)
+                if elements:
+                    for elem in elements:
+                        if await elem.is_visible():
+                            return elem
+            except Exception:
+                continue
+        return None
+
     async def _execute_login(self) -> bool:
         try:
             logger.info(f"{self.platform_id} 开始登录...")
@@ -24,22 +39,7 @@ class ErnieAdapter(BaseAdapter):
                 "[class*='login']"
             ]
 
-            login_button = None
-            for selector in login_button_selectors:
-                try:
-                    elements = await self.page.query_selector_all(selector)
-                    if elements:
-                        for elem in elements:
-                            is_visible = await elem.is_visible()
-                            if is_visible:
-                                login_button = elem
-                                logger.info(f"{self.platform_id} 找到登录按钮：{selector}")
-                                break
-                        if login_button:
-                            break
-                except:
-                    continue
-
+            login_button = await self._find_visible_element(login_button_selectors)
             if not login_button:
                 logger.warning(f"{self.platform_id} 登录按钮未找到")
                 return False
@@ -55,42 +55,26 @@ class ErnieAdapter(BaseAdapter):
                 "input[type='text']"
             ]
 
-            username_selector = None
-            for selector in username_selectors:
-                try:
-                    await self.page.wait_for_selector(selector, timeout=3000)
-                    username_selector = selector
-                    break
-                except:
-                    continue
-
-            if username_selector:
-                await self.page.fill(username_selector, self.username)
-                await self.page.wait_for_timeout(500)
-            else:
+            username_elem = await self._find_visible_element(username_selectors)
+            if not username_elem:
                 logger.warning(f"{self.platform_id} 用户名输入框未找到")
                 return False
+
+            await username_elem.fill(self.username)
+            await self.page.wait_for_timeout(500)
 
             password_selectors = [
                 "input[name='password']",
                 "input[type='password']"
             ]
 
-            password_selector = None
-            for selector in password_selectors:
-                try:
-                    await self.page.wait_for_selector(selector, timeout=3000)
-                    password_selector = selector
-                    break
-                except:
-                    continue
-
-            if password_selector:
-                await self.page.fill(password_selector, self.password)
-                await self.page.wait_for_timeout(500)
-            else:
+            password_elem = await self._find_visible_element(password_selectors)
+            if not password_elem:
                 logger.warning(f"{self.platform_id} 密码输入框未找到")
                 return False
+
+            await password_elem.fill(self.password)
+            await self.page.wait_for_timeout(500)
 
             submit_selectors = [
                 "button[type='submit']",
@@ -99,17 +83,9 @@ class ErnieAdapter(BaseAdapter):
                 ".submit-btn"
             ]
 
-            submit_selector = None
-            for selector in submit_selectors:
-                try:
-                    await self.page.wait_for_selector(selector, timeout=3000)
-                    submit_selector = selector
-                    break
-                except:
-                    continue
-
-            if submit_selector:
-                await self.page.click(submit_selector)
+            submit_elem = await self._find_visible_element(submit_selectors)
+            if submit_elem:
+                await submit_elem.click()
                 await self.page.wait_for_timeout(5000)
                 logger.info(f"{self.platform_id} 登录成功")
             else:
@@ -141,23 +117,15 @@ class ErnieAdapter(BaseAdapter):
                 "[role='textbox']"
             ]
 
-            input_selector = None
-            for selector in input_selectors:
-                try:
-                    await self.page.wait_for_selector(selector, timeout=10000)
-                    input_selector = selector
-                    break
-                except:
-                    continue
-
-            if not input_selector:
+            input_elem = await self._find_visible_element(input_selectors)
+            if not input_elem:
                 raise Exception("输入框未找到")
 
-            await self.page.click(input_selector)
+            await input_elem.click()
             await self.page.wait_for_timeout(500)
-            await self.page.fill(input_selector, question)
+            await input_elem.fill(question)
             await self.page.wait_for_timeout(500)
-            await self.page.press(input_selector, "Enter")
+            await input_elem.press("Enter")
 
             logger.info(f"{self.platform_id} 发送消息：{question[:30]}...")
 
@@ -227,25 +195,10 @@ class ErnieAdapter(BaseAdapter):
                 "button:has(svg[class*='share'])"
             ]
 
-            share_button = None
-            for selector in share_button_selectors:
-                try:
-                    elements = await self.page.query_selector_all(selector)
-                    if elements:
-                        for elem in elements:
-                            if await elem.is_visible():
-                                share_button = elem
-                                logger.info(f"{self.platform_id} 找到分享按钮：{selector}")
-                                break
-                        if share_button:
-                            break
-                except Exception as e:
-                    logger.debug(f"{self.platform_id} 检查分享按钮选择器 {selector} 失败：{str(e)}")
-                    continue
-
+            share_button = await self._find_visible_element(share_button_selectors)
             if not share_button:
                 logger.warning(f"{self.platform_id} 分享按钮未找到，使用默认截图")
-                return await self._default_screenshot(question, answer)
+                return await self._default_screenshot(question)
 
             await share_button.click()
             await self.page.wait_for_timeout(2000)
@@ -260,25 +213,10 @@ class ErnieAdapter(BaseAdapter):
                 "[data-testid*='generate']"
             ]
 
-            generate_button = None
-            for selector in generate_selectors:
-                try:
-                    elements = await self.page.query_selector_all(selector)
-                    if elements:
-                        for elem in elements:
-                            if await elem.is_visible():
-                                generate_button = elem
-                                logger.info(f"{self.platform_id} 找到生成图片按钮：{selector}")
-                                break
-                        if generate_button:
-                            break
-                except Exception as e:
-                    logger.debug(f"{self.platform_id} 检查生成按钮选择器 {selector} 失败：{str(e)}")
-                    continue
-
+            generate_button = await self._find_visible_element(generate_selectors)
             if not generate_button:
-                logger.warning(f"{self.platform_id} 生成图片按钮未找到，使用默认截图")
-                return await self._default_screenshot(question, answer)
+                logger.warning(f"{self.platform_id} 未找到生成图片按钮，使用默认截图")
+                return await self._default_screenshot(question)
 
             await generate_button.click()
             await self.page.wait_for_timeout(3000)
@@ -293,22 +231,7 @@ class ErnieAdapter(BaseAdapter):
                 "[data-testid*='save']"
             ]
 
-            save_button = None
-            for selector in save_selectors:
-                try:
-                    elements = await self.page.query_selector_all(selector)
-                    if elements:
-                        for elem in elements:
-                            if await elem.is_visible():
-                                save_button = elem
-                                logger.info(f"{self.platform_id} 找到保存按钮：{selector}")
-                                break
-                        if save_button:
-                            break
-                except Exception as e:
-                    logger.debug(f"{self.platform_id} 检查保存按钮选择器 {selector} 失败：{str(e)}")
-                    continue
-
+            save_button = await self._find_visible_element(save_selectors)
             if save_button:
                 await save_button.click()
                 await self.page.wait_for_timeout(2000)
@@ -326,9 +249,9 @@ class ErnieAdapter(BaseAdapter):
 
         except Exception as e:
             logger.error(f"{self.platform_id} 截图失败：{str(e)}")
-            return await self._default_screenshot(question, answer)
+            return await self._default_screenshot(question)
 
-    async def _default_screenshot(self, question: Question, answer: str) -> tuple[Optional[str], bool, Optional[str]]:
+    async def _default_screenshot(self, question: Question) -> tuple[Optional[str], bool, Optional[str]]:
         try:
             from src.utils.screenshot import ScreenshotTool
             screenshot_tool = ScreenshotTool()

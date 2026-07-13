@@ -3,7 +3,6 @@ from typing import Optional
 from src.adapters.base import BaseAdapter
 from src.models.question import Question
 from src.utils.logger import logger
-from playwright.async_api import Page
 
 
 class DoubaoAdapter(BaseAdapter):
@@ -156,29 +155,15 @@ class DoubaoAdapter(BaseAdapter):
 
     async def _get_answer(self) -> str:
         try:
-            # 根据提供的HTML结构：
-            # <div class="relative flex-row flex w-full" data-message-id="46490029879612418">
-            #   <div data-container-type="block-v2" class="flex w-full flex-col space-y-20">
-            #     <div data-render-engine="node">
-            #       <div class="container-P2rR72 flow-markdown-body theme-samantha-uDexJL container-ZLUAIf mdbox-theme-next">
-            #         <div class="auto-hide-last-sibling-br paragraph-pP9ZLC paragraph-element">你好呀～有什么需要帮忙的吗？</div>
-            #       </div>
-            #     </div>
-            #   </div>
-            # </div>
-            
             answer_selectors = [
-                # 最精准：基于提供的HTML结构
-                "div[data-message-id] div[data-container-type='block-v2'] div.flow-markdown-body",
-                "div[data-message-id] div[data-container-type='block-v2']",
-                "div.flow-markdown-body",
-                "div.container-P2rR72",
-                
-                # 段落级别选择器
-                "div.auto-hide-last-sibling-br.paragraph-pP9ZLC",
-                "div.paragraph-pP9ZLC",
-                
-                # 备用选择器
+                # 豆包实际HTML结构选择器（基于分析）
+                ".auto-hide-last-sibling-br.paragraph-element",
+                ".auto-hide-last-sibling-br.paragraph-pP9ZLC",
+                ".flow-markdown-body",
+                ".md-box-root",
+                "[data-render-engine='node']",
+                "[data-container-type='block-v2']",
+                # 通用选择器
                 ".message-content",
                 ".answer-content",
                 ".response-content",
@@ -191,7 +176,10 @@ class DoubaoAdapter(BaseAdapter):
                 ".content"
             ]
 
-            max_wait = 60
+            max_wait = 120
+            last_text = ""
+            stable_count = 0
+            
             for _ in range(max_wait):
                 for selector in answer_selectors:
                     try:
@@ -201,14 +189,50 @@ class DoubaoAdapter(BaseAdapter):
                             is_visible = await last.is_visible()
                             if is_visible:
                                 text = await last.inner_text()
-                                if text and len(text.strip()) > 10:
-                                    logger.info(f"豆包成功获取回答：{text[:30]}...")
-                                    return text.strip()
+                                text = text.strip()
+                                
+                                if text and len(text) > 10:
+                                    # 检测流式输出是否稳定（内容不再变化）
+                                    if text == last_text:
+                                        stable_count += 1
+                                    else:
+                                        last_text = text
+                                        stable_count = 0
+                                    
+                                    # 内容稳定3秒且长度超过30字符认为回答完成
+                                    if stable_count >= 3 and len(text) > 30:
+                                        logger.info(f"豆包成功获取回答：{text[:30]}...")
+                                        return text
                     except Exception as e:
-                        logger.debug(f"豆包尝试选择器 {selector} 失败: {e}")
                         continue
+                
+                # 尝试通过data-message-id定位最新消息
+                try:
+                    messages = await self.page.query_selector_all("[data-message-id]")
+                    if messages and len(messages) > 0:
+                        last_msg = messages[-1]
+                        content = await last_msg.inner_text()
+                        content = content.strip()
+                        if content and len(content) > 10:
+                            if content == last_text:
+                                stable_count += 1
+                            else:
+                                last_text = content
+                                stable_count = 0
+                            
+                            if stable_count >= 3 and len(content) > 30:
+                                logger.info(f"豆包通过data-message-id获取回答：{content[:30]}...")
+                                return content
+                except Exception:
+                    pass
+                    
                 await self.page.wait_for_timeout(1000)
 
+            # 如果超时但有部分内容，返回已获取的内容
+            if last_text and len(last_text) > 10:
+                logger.warning(f"豆包回答获取超时，返回已获取内容：{last_text[:30]}...")
+                return last_text
+                
             logger.warning("豆包等待回答超时")
             return "未找到回答"
 
@@ -216,10 +240,7 @@ class DoubaoAdapter(BaseAdapter):
             logger.error(f"豆包获取回答失败：{str(e)}")
             return "获取回答失败"
 
-   
-        await super().close()
-
-    async def screenshot(self, question: Question, answer: str) -> tuple[Optional[str], bool, Optional[str]]:
+    async def screenshot(self, question: Question) -> tuple[Optional[str], bool, Optional[str]]:
         """
         优化后的截图逻辑：
         1. 尝试通过UI交互生成分享图片/链接。
@@ -230,16 +251,11 @@ class DoubaoAdapter(BaseAdapter):
             return None, False, None
 
         try:
-            from src.utils.screenshot import ScreenshotTool
-            screenshot_tool = ScreenshotTool()
-
             logger.info("豆包开始尝试生成分享图片...")
             
             # 标记分享流程是否成功
             share_success = False
             share_link = None
-            screenshot_path = None
-            is_shared_image = False
 
             # --- 步骤 1: 查找并点击分享按钮 ---
             share_button_selectors = [
@@ -254,7 +270,7 @@ class DoubaoAdapter(BaseAdapter):
                 "button:has(svg[class*='share'])"
             ]
 
-            share_button_elem = await self._find_visible_element(share_button_selectors, timeout=5000)
+            share_button_elem = await self._find_visible_element(share_button_selectors)
             
             if share_button_elem:
                 await share_button_elem.click()
@@ -328,7 +344,7 @@ class DoubaoAdapter(BaseAdapter):
                     "div[class*='share-content']"
                 ]
                 
-                overlay_elem = await self._find_visible_element(share_overlay_selectors, timeout=2000)
+                overlay_elem = await self._find_visible_element(share_overlay_selectors)
                 
                 if overlay_elem:
                     import time
@@ -345,17 +361,17 @@ class DoubaoAdapter(BaseAdapter):
                 else:
                     # 分享了但没找到预览层，可能只是打开了分享菜单，没生成图片
                     logger.warning("豆包分享后未找到预览层，回退到默认截图")
-                    return await self._default_screenshot(question, answer)
+                    return await self._default_screenshot(question)
 
             else:
                 # 分享流程失败，执行默认截图
                 logger.info("豆包分享流程失败，执行默认页面截图")
-                return await self._default_screenshot(question, answer)
+                return await self._default_screenshot(question)
 
         except Exception as e:
             logger.error(f"豆包截图逻辑异常：{str(e)}")
             # 发生任何异常，确保至少有一张默认截图
-            return await self._default_screenshot(question, answer)
+            return await self._default_screenshot(question)
 
     async def _find_visible_element(self, selectors: list, timeout: int = 5000) -> Optional[object]:
         """
@@ -372,7 +388,7 @@ class DoubaoAdapter(BaseAdapter):
                 continue
         return None
 
-    async def _default_screenshot(self, question: Question, answer: str) -> tuple[Optional[str], bool, Optional[str]]:
+    async def _default_screenshot(self, question: Question) -> tuple[Optional[str], bool, Optional[str]]:
         try:
             from src.utils.screenshot import ScreenshotTool
             screenshot_tool = ScreenshotTool()
