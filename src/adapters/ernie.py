@@ -123,9 +123,32 @@ class ErnieAdapter(BaseAdapter):
 
             await input_elem.click()
             await self.page.wait_for_timeout(500)
+            
             await input_elem.fill(question)
             await self.page.wait_for_timeout(500)
-            await input_elem.press("Enter")
+            
+            await self.page.keyboard.press("Enter")
+            await self.page.wait_for_timeout(1000)
+            
+            try:
+                send_selectors = [
+                    "button:has-text('发送')",
+                    "button:has-text('Send')",
+                    ".send-btn",
+                    "[class*='send']",
+                    "button[type='submit']"
+                ]
+                for sel in send_selectors:
+                    try:
+                        send_btn = await self.page.query_selector(sel)
+                        if send_btn and await send_btn.is_visible():
+                            await send_btn.click()
+                            logger.info(f"{self.platform_id} 点击发送按钮: {sel}")
+                            break
+                    except:
+                        continue
+            except Exception as e:
+                logger.debug(f"{self.platform_id} 查找发送按钮失败: {str(e)}")
 
             logger.info(f"{self.platform_id} 发送消息：{question[:30]}...")
 
@@ -136,20 +159,39 @@ class ErnieAdapter(BaseAdapter):
     async def _get_answer(self) -> str:
         try:
             answer_selectors = [
+                ".response-content",
+                ".msg-content",
+                ".markdown-body",
+                ".content-body",
+                "[class*='response']",
+                "[class*='message-content']",
+                "[class*='answer']",
+                ".ant-list-item",
+                ".chat-item",
+                ".assistant-message",
                 ".message-content",
                 ".answer-content",
-                ".response-content",
                 ".chat-message",
-                ".assistant-message",
                 "[role='listitem']",
                 ".message-body",
-                ".markdown-body",
                 ".prose",
-                ".content"
+                ".content",
+                "div[class*='markdown']",
+                "div[class*='rich-text']",
+                "div[class*='reply']",
+                ".yiyan-answer",
+                ".baidu-chat-answer",
+                "[data-testid*='answer']",
+                "[data-testid*='message']"
             ]
 
             max_wait = 60
-            for _ in range(max_wait):
+            last_answer = ""
+            stable_count = 0
+            stable_threshold = 3
+            
+            for i in range(max_wait):
+                current_text = ""
                 for selector in answer_selectors:
                     try:
                         elems = await self.page.query_selector_all(selector)
@@ -159,10 +201,55 @@ class ErnieAdapter(BaseAdapter):
                             if is_visible:
                                 text = await last.inner_text()
                                 if text and len(text.strip()) > 10:
-                                    logger.info(f"{self.platform_id} 成功获取回答：{text[:30]}...")
-                                    return text.strip()
+                                    current_text = text.strip()
+                                    break
                     except Exception as e:
+                        logger.debug(f"{self.platform_id} 获取回答 {selector} 失败：{str(e)}")
                         continue
+                
+                if current_text:
+                    if current_text == last_answer:
+                        stable_count += 1
+                        if stable_count >= stable_threshold:
+                            logger.info(f"{self.platform_id} 成功获取回答：{current_text[:30]}...")
+                            return current_text
+                    else:
+                        stable_count = 0
+                        last_answer = current_text
+                
+                if i == 10:
+                    try:
+                        all_elements = await self.page.evaluate("""
+                            () => {
+                                const elements = Array.from(document.querySelectorAll('div'));
+                                const textElements = [];
+                                elements.forEach(elem => {
+                                    const text = elem.innerText.trim();
+                                    if (text && text.length > 20 && text.length < 500) {
+                                        const className = elem.className;
+                                        if (className && className.length < 100) {
+                                            textElements.push({
+                                                class: className.substring(0, 80),
+                                                text: text.substring(0, 50)
+                                            });
+                                        }
+                                    }
+                                });
+                                return textElements.slice(0, 15);
+                            }
+                        """)
+                        logger.info(f"{self.platform_id} 页面元素调试: {all_elements}")
+                    except Exception as e:
+                        logger.debug(f"{self.platform_id} 调试失败: {str(e)}")
+                
+                try:
+                    loading_elements = await self.page.query_selector_all(".loading,.typing,[class*='loading'],[class*='typing']")
+                    is_loading = any(await e.is_visible() for e in loading_elements) if loading_elements else False
+                    if not is_loading and last_answer:
+                        return last_answer
+                except Exception as e:
+                    pass
+
                 await self.page.wait_for_timeout(1000)
 
             logger.warning(f"{self.platform_id} 等待回答超时")
@@ -172,9 +259,17 @@ class ErnieAdapter(BaseAdapter):
             logger.error(f"{self.platform_id} 获取回答失败：{str(e)}")
             return f"获取回答失败：{str(e)}"
 
-    async def screenshot(self, question: Question, answer: str) -> tuple[Optional[str], bool, Optional[str]]:
+    async def _check_login_url_pattern(self, url: str) -> bool:
+        url_lower = url.lower()
+        if "login" in url_lower or "auth" in url_lower:
+            return False
+        elif "yiyan" in url_lower or "chat" in url_lower:
+            return True
+        return None
+
+    async def screenshot(self, question: Question) -> tuple[Optional[str], bool, Optional[str], Optional[str]]:
         if self.page is None:
-            return None, False, None
+            return None, False, None, None
 
         try:
             from src.utils.screenshot import ScreenshotTool
@@ -239,34 +334,34 @@ class ErnieAdapter(BaseAdapter):
             else:
                 logger.warning(f"{self.platform_id} 保存按钮未找到，继续使用默认截图")
 
-            screenshot_path, is_shared_image, share_link = await screenshot_tool.capture_from_page(
+            screenshot_path, is_shared_image, share_link, share_link_error = await screenshot_tool.capture_from_page(
                 self.page, 
                 self.platform_id, 
                 question
             )
 
-            return screenshot_path, is_shared_image, share_link
+            return screenshot_path, is_shared_image, share_link, share_link_error
 
         except Exception as e:
             logger.error(f"{self.platform_id} 截图失败：{str(e)}")
             return await self._default_screenshot(question)
 
-    async def _default_screenshot(self, question: Question) -> tuple[Optional[str], bool, Optional[str]]:
+    async def _default_screenshot(self, question: Question) -> tuple[Optional[str], bool, Optional[str], Optional[str]]:
         try:
             from src.utils.screenshot import ScreenshotTool
             screenshot_tool = ScreenshotTool()
 
             await self.page.wait_for_timeout(1000)
-            screenshot_path, is_shared_image, share_link = await screenshot_tool.capture_from_page(
+            screenshot_path, is_shared_image, share_link, share_link_error = await screenshot_tool.capture_from_page(
                 self.page, 
                 self.platform_id, 
                 question
             )
-            return screenshot_path, is_shared_image, share_link
+            return screenshot_path, is_shared_image, share_link, share_link_error
 
         except Exception as e:
             logger.error(f"{self.platform_id} 默认截图失败：{str(e)}")
-            return None, False, None
+            return None, False, None, str(e)
 
     async def close(self):
         await super().close()

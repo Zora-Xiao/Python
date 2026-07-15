@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 from typing import Optional
+from datetime import datetime
 from src.adapters.base import BaseAdapter
 from src.models.question import Question
 from src.utils.logger import logger
@@ -301,9 +302,9 @@ class YuanbaoAdapter(BaseAdapter):
                     continue
             return None
     
-    async def screenshot(self, question: Question) -> tuple[Optional[str], bool, Optional[str]]:
+    async def screenshot(self, question: Question) -> tuple[Optional[str], bool, Optional[str], Optional[str]]:
         if self.page is None:
-            return None, False, None
+            return None, False, None, None
         
         try:
             logger.info("元宝开始截图流程...")
@@ -786,7 +787,7 @@ class YuanbaoAdapter(BaseAdapter):
                         
                         if file_path.exists() and file_path.stat().st_size > 0:
                             logger.info(f"元宝分享图片文件大小: {file_path.stat().st_size} bytes")
-                            return str(file_path), True, None
+                            return str(file_path), True, None, None
                         else:
                             logger.warning(f"元宝分享图片文件无效，回退到默认截图")
                             return await self._default_screenshot(question)
@@ -813,22 +814,22 @@ class YuanbaoAdapter(BaseAdapter):
             logger.error(traceback.format_exc())
             return await self._default_screenshot(question)
 
-    async def _default_screenshot(self, question: Question) -> tuple[Optional[str], bool, Optional[str]]:
+    async def _default_screenshot(self, question: Question) -> tuple[Optional[str], bool, Optional[str], Optional[str]]:
         try:
             from src.utils.screenshot import ScreenshotTool
             screenshot_tool = ScreenshotTool()
             
             await self.page.wait_for_timeout(1000)
-            screenshot_path, is_shared_image, share_link = await screenshot_tool.capture_from_page(
+            screenshot_path, is_shared_image, share_link, share_link_error = await screenshot_tool.capture_from_page(
                 self.page, 
                 self.platform_id, 
                 question
             )
-            return screenshot_path, is_shared_image, share_link
+            return screenshot_path, is_shared_image, share_link, share_link_error
             
         except Exception as e:
             logger.error(f"元宝默认截图失败：{str(e)}")
-            return None, False, None
+            return None, False, None, str(e)
     
     async def close(self):
         await super().close()

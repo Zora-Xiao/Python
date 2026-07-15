@@ -12,6 +12,7 @@
 - ✅ **异步并发处理**：提高评测效率
 - ✅ **智能限速机制**：防止账号被封
 - ✅ **灵活的规则引擎**：支持关键词和正则匹配
+- ✅ **验证码处理**：支持手动处理和自动失败两种模式
 - ✅ **Excel 报告导出**：包含截图嵌入和详细统计
 - ✅ **详细的日志记录**：方便调试和追踪
 - ✅ **统一的适配器架构**：代码复用率高，易于扩展
@@ -37,18 +38,18 @@
 │   │   ├── ernie.py           # 文心一言适配器
 │   │   └── deepseek.py        # Deepseek 适配器
 │   ├── engine/                 # 核心引擎
-│   │   ├── rate_limiter.py    # 限速器（已实现）
-│   │   ├── scheduler.py       # 调度器（开发中）
-│   │   └── rule_matcher.py    # 规则引擎（开发中）
-│   ├── models/                 # 数据模型（已实现）
+│   │   ├── rate_limiter.py    # 限速器
+│   │   ├── scheduler.py       # 调度器
+│   │   └── rule_matcher.py    # 规则引擎
+│   ├── models/                 # 数据模型
 │   │   ├── question.py        # 问题模型
 │   │   ├── rule.py            # 规则模型
 │   │   └── result.py          # 结果模型
 │   ├── utils/                  # 工具类
-│   │   ├── logger.py          # 日志工具（已实现）
-│   │   └── screenshot.py      # 截图工具（已实现）
+│   │   ├── logger.py          # 日志工具
+│   │   └── screenshot.py      # 截图工具
 │   └── exporter/               # 导出器
-│       └── excel_exporter.py  # Excel 导出器（开发中）
+│       └── excel_exporter.py  # Excel 导出器
 ├── tests/                      # 测试目录
 ├── screenshots/                # 截图保存目录
 ├── results/                    # 结果保存目录
@@ -145,6 +146,25 @@ rate_limit:
   max_retries: 3
 ```
 
+### 验证码处理配置
+
+```yaml
+captcha_handling:
+  mode: "manual"    # manual: 等待用户手动处理验证码 | fail: 检测到验证码时直接标记失败
+  timeout: 120      # 用户手动处理验证码的超时时间（秒）
+  platforms:        # 需要启用验证码处理的平台列表
+    - doubao
+```
+
+### 浏览器配置
+
+```yaml
+browser:
+  headless: true    # 是否使用无头模式运行
+  slow_mo: 100      # 操作间隔（毫秒），模拟人类操作速度
+  timeout: 30000    # 页面超时时间（毫秒）
+```
+
 ## 使用方法
 
 ### 基本使用（浏览器自动化模式）
@@ -157,6 +177,7 @@ python main.py config.yaml sequential
 - **DeepSeek**：程序会自动登录（需配置 username 和 password），不保存 Cookie，每次运行都重新登录
 - **其他平台**：首次运行需要手动登录生成 Cookie，后续运行会自动验证 Cookie 有效性
 - 如果 Cookie 验证失败，程序会等待手动重新登录
+- **验证码处理**：当检测到验证码时，根据配置模式处理（manual：等待用户手动完成；fail：直接标记失败）
 
 ### 指定配置文件
 
@@ -195,7 +216,7 @@ python main.py config.yaml sequential
 
 ## 规则引擎
 
-规则引擎支持两种匹配方式：
+规则引擎支持多种匹配方式：
 
 ### 关键词匹配
 
@@ -211,6 +232,29 @@ keywords:
 ```yaml
 type: "regex"
 pattern: "(推荐 | 建议).*(使用 | 采用 | 选择)"
+```
+
+### 质量检测
+
+```yaml
+type: "quality"
+quality_keywords: ["好的", "没问题", "可以", "good", "great"]
+quality_type: "positive"  # positive | negative
+```
+
+### 长度校验
+
+```yaml
+type: "length"
+min_length: 10
+max_length: 2000
+```
+
+### 相关性分析
+
+```yaml
+type: "relevance"
+relevance_keywords: ["介绍", "说明", "解释", "是什么"]
 ```
 
 规则按优先级从高到低匹配，可以设置多个规则。
@@ -294,6 +338,16 @@ platforms:
    - 首次运行需要安装 Playwright 浏览器
    - 建议在虚拟环境中运行
 
+5. **安全警告**
+   - `config.yaml` 文件包含敏感信息（用户名、密码等），**切勿提交到版本控制系统**
+   - 项目已配置 `.gitignore`，会自动忽略 `config.yaml` 和 `cookies/` 目录
+   - 建议使用环境变量管理敏感凭据，避免明文存储
+   - 示例：
+     ```bash
+     export DOUBAO_USERNAME="your_username"
+     export DOUBAO_PASSWORD="your_password"
+     ```
+
 ## 故障排除
 
 ### 常见问题
@@ -317,6 +371,11 @@ platforms:
 5. **Excel 导出失败**
    - 确保 results 目录存在且有写入权限
    - 检查是否安装了 openpyxl
+
+6. **验证码问题**
+   - 如果配置为 manual 模式，检测到验证码时程序会暂停等待用户手动处理
+   - 如果配置为 fail 模式，检测到验证码时会直接标记失败并继续下一个平台
+   - 建议将 slow_mo 设置为 100-200ms，降低触发验证码的概率
 
 ## 开发指南
 
@@ -378,6 +437,18 @@ pytest tests/
 如有问题或建议，请提交 Issue。
 
 ## 更新日志
+
+### v2.2.0 (2026-07-15)
+- ✨ 豆包平台新增验证码（CAPTCHA）检测和处理机制
+- ✨ 支持 manual 和 fail 两种验证码处理模式
+- ✨ 优化浏览器行为：设置 slow_mo=100ms，添加随机延迟和鼠标移动模拟
+- ✨ 重构 DeepSeek 自动登录流程，添加完整的登录验证机制
+- ✨ 修复 Qwen 和 Doubao 平台回答内容误判问题（排除用户问题文本）
+- ✨ 优化登录状态检测逻辑，基于 URL 模式判断登录状态
+- 🐛 修复所有平台的登录状态误判问题
+- 🐛 修复 DeepSeek 登录按钮点击失败但返回 True 的问题
+- 🐛 修复 Ernie 截图方法参数错误问题
+- 📦 平台成功率提升至 5/5（100%）
 
 ### v2.1.0 (2026-06-09)
 - ✨ 重构适配器架构，提取公共方法到 BaseAdapter 基类

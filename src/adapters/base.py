@@ -457,11 +457,56 @@ class BaseAdapter(ABC):
             logger.info(f"{self.name}步骤4: 发送消息并获取回答")
             answer = await self._send_message_and_get_answer(question.text)
             logger.info(f"{self.name}步骤5: 获取回答成功，长度: {len(answer)}")
-            return answer, "success"
+            
+            # 验证回答有效性
+            validation_result = self._validate_answer(answer)
+            if validation_result["is_valid"]:
+                return answer, "success"
+            else:
+                return answer, validation_result["status"]
             
         except Exception as e:
             logger.error(f"{self.name}提问失败: {str(e)}")
             return f"提问失败: {str(e)}", "error"
+    
+    def _validate_answer(self, answer: str) -> dict:
+        """验证回答的有效性，检查是否为空、错误提示或内容过短"""
+        if not answer:
+            return {"is_valid": False, "status": "error", "reason": "回答为空"}
+        
+        answer_stripped = answer.strip()
+        
+        if not answer_stripped:
+            return {"is_valid": False, "status": "error", "reason": "回答为空"}
+        
+        error_indicators = [
+            "未找到回答",
+            "获取回答失败",
+            "提问失败",
+            "页面已关闭",
+            "登录失败",
+            "无法进入",
+            "网络错误",
+            "error",
+            "Error",
+            "ERROR",
+            "无法回答",
+            "暂时无法",
+            "系统繁忙",
+            "服务器错误",
+            "超时",
+            "timeout",
+            "Timeout"
+        ]
+        
+        for indicator in error_indicators:
+            if indicator in answer_stripped:
+                return {"is_valid": False, "status": "error", "reason": f"检测到错误指示词: {indicator}"}
+        
+        if len(answer_stripped) < 5:
+            return {"is_valid": False, "status": "error", "reason": f"回答过短（{len(answer_stripped)}字符）"}
+        
+        return {"is_valid": True, "status": "success", "reason": "回答有效"}
     
     async def _ensure_logged_in(self) -> bool:
         """确保用户已登录，如果未登录则尝试自动登录，失败则等待手动登录"""
@@ -503,12 +548,12 @@ class BaseAdapter(ABC):
             logger.info("=" * 50)
             logger.info(f"? {self.name}需要登录")
             logger.info("? 请在打开的浏览器中完成登录")
-            logger.info("? 等待登录完成（最多等待120秒）")
+            logger.info("? 等待登录完成（最多等待60秒）")
             logger.info("? 登录完成后请保持浏览器窗口打开")
             logger.info("=" * 50)
             
-            # 等待用户手动登录，每2秒检查一次
-            for i in range(60):
+            # 等待用户手动登录，每2秒检查一次（最多等待60秒）
+            for i in range(30):
                 try:
                     # 检查页面是否还存在
                     if not self.page:
@@ -553,9 +598,19 @@ class BaseAdapter(ABC):
             
             await self.page.wait_for_timeout(1000)
             
-            logger.info(f"{self.name}检查登录状态，当前URL: {self.page.url}")
+            current_url = self.page.url
+            logger.info(f"{self.name}检查登录状态，当前URL: {current_url}")
             
-            # 先检查是否在登录页面（有登录按钮、用户名输入框等）
+            # 优先通过 URL 模式判断登录状态（各平台可覆盖）
+            url_check_result = await self._check_login_url_pattern(current_url)
+            if url_check_result is not None:
+                if url_check_result:
+                    logger.info(f"{self.name}通过URL判定已登录")
+                else:
+                    logger.info(f"{self.name}通过URL判定未登录")
+                return url_check_result
+            
+            # 检查是否在登录页面（有登录按钮、用户名输入框等）
             login_indicators = [
                 "button:has-text('登录')",
                 "button:has-text('Login')",
@@ -571,7 +626,6 @@ class BaseAdapter(ABC):
             has_login_indicator = False
             for selector in login_indicators:
                 try:
-                    # 检查页面是否仍然有效
                     if not self.page or self.page.is_closed():
                         logger.warning(f"{self.name}在检查选择器 {selector} 时页面已关闭")
                         return False
@@ -587,7 +641,6 @@ class BaseAdapter(ABC):
                             break
                 except Exception as e:
                     logger.debug(f"{self.name}检测登录指示器失败: {str(e)}")
-                    # 检查页面是否仍然有效
                     if not self.page or self.page.is_closed():
                         logger.warning(f"{self.name}检测登录指示器异常后页面已关闭")
                         return False
@@ -596,11 +649,6 @@ class BaseAdapter(ABC):
             # 如果检测到登录页面元素，判定为未登录
             if has_login_indicator:
                 logger.info(f"{self.name}检测到登录页面，判定为未登录")
-                return False
-            
-            # 检查页面是否仍然有效
-            if not self.page or self.page.is_closed():
-                logger.warning(f"{self.name}在检查聊天输入框前页面已关闭")
                 return False
             
             # 再检测聊天输入框来确认登录状态
@@ -617,7 +665,6 @@ class BaseAdapter(ABC):
             
             for selector in chat_input_selectors:
                 try:
-                    # 检查页面是否仍然有效
                     if not self.page or self.page.is_closed():
                         logger.warning(f"{self.name}在检查选择器 {selector} 时页面已关闭")
                         return False
@@ -626,23 +673,36 @@ class BaseAdapter(ABC):
                     if elems:
                         for elem in elems:
                             if await elem.is_visible():
-                                # 如果检测到输入框且不在登录页面，则判定为已登录
-                                if not has_login_indicator:
-                                    logger.info(f"{self.name}检测到聊天输入框，判定为已登录")
-                                    return True
+                                logger.info(f"{self.name}找到聊天输入框: {selector}，判定已登录")
+                                return True
                 except Exception as e:
-                    logger.debug(f"{self.name}检测选择器 {selector} 失败: {str(e)}")
-                    # 检查页面是否仍然有效
-                    if not self.page or self.page.is_closed():
-                        logger.warning(f"{self.name}检测选择器异常后页面已关闭")
-                        return False
+                    logger.debug(f"{self.name}检测聊天输入框失败: {str(e)}")
                     continue
             
-            logger.info(f"{self.name}未找到确定的登录状态标识")
+            logger.info(f"{self.name}未找到聊天输入框，判定未登录")
             return False
+            
         except Exception as e:
-            logger.warning(f"{self.name}检测登录状态失败: {str(e)}")
+            logger.error(f"{self.name}检查登录状态失败: {str(e)}")
             return False
+    
+    async def _check_login_url_pattern(self, url: str) -> bool:
+        """基于URL模式判断登录状态，各平台可覆盖此方法
+        返回 True 表示已登录，False 表示未登录，None 表示无法通过URL判断"""
+        login_keywords = ["login", "signin", "sign_in", "account", "auth", "register"]
+        logged_in_keywords = ["chat", "conversation", "dashboard", "home"]
+        
+        url_lower = url.lower()
+        
+        has_login_keyword = any(kw in url_lower for kw in login_keywords)
+        has_logged_in_keyword = any(kw in url_lower for kw in logged_in_keywords)
+        
+        if has_login_keyword and not has_logged_in_keyword:
+            return False
+        elif has_logged_in_keyword and not has_login_keyword:
+            return True
+        
+        return None
     
     async def _send_message_and_get_answer(self, question: str) -> str:
         await self._send_message(question)
@@ -650,29 +710,29 @@ class BaseAdapter(ABC):
         answer = await self._get_answer()
         return answer
     
-    async def screenshot(self, question: Question) -> tuple[Optional[str], bool, Optional[str]]:
+    async def screenshot(self, question: Question) -> tuple[Optional[str], bool, Optional[str], Optional[str]]:
         """
         截图方法，尝试获取分享图片或截图
-        返回：(图片路径, 是否为分享图片, 分享链接)
+        返回：(图片路径, 是否为分享图片, 分享链接, 分享链接失败原因)
         """
         if self.page is None:
-            return None, False, None
+            return None, False, None, None
         
         try:
             from src.utils.screenshot import ScreenshotTool
             screenshot_tool = ScreenshotTool()
             
             await self.page.wait_for_timeout(1000)
-            screenshot_path, is_shared_image, share_link = await screenshot_tool.capture_from_page(
+            screenshot_path, is_shared_image, share_link, share_link_error = await screenshot_tool.capture_from_page(
                 self.page, 
                 self.platform_id, 
                 question
             )
-            return screenshot_path, is_shared_image, share_link
+            return screenshot_path, is_shared_image, share_link, share_link_error
             
         except Exception as e:
             logger.error(f"截图失败：{str(e)}")
-            return None, False, None
+            return None, False, None, str(e)
     
     async def process(self, question: Question) -> Dict[str, Any]:
         try:
@@ -684,9 +744,10 @@ class BaseAdapter(ABC):
                     "screenshot_path": None,
                     "is_shared_image": False,
                     "share_link": None,
+                    "share_link_error": None,
                     "error_message": answer
                 }
-            screenshot_path, is_shared_image, share_link = await self.screenshot(question)
+            screenshot_path, is_shared_image, share_link, share_link_error = await self.screenshot(question)
             
             return {
                 "answer": answer,
@@ -694,6 +755,7 @@ class BaseAdapter(ABC):
                 "screenshot_path": screenshot_path,
                 "is_shared_image": is_shared_image,
                 "share_link": share_link,
+                "share_link_error": share_link_error,
                 "error_message": None
             }
         except Exception as e:
@@ -703,6 +765,7 @@ class BaseAdapter(ABC):
                 "screenshot_path": None,
                 "is_shared_image": False,
                 "share_link": None,
+                "share_link_error": None,
                 "error_message": str(e)
             }
     

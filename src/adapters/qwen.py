@@ -113,6 +113,7 @@ class QwenAdapter(BaseAdapter):
     async def _get_answer(self) -> str:
         try:
             answer_selectors = [
+                ".qwen-chat-package-comp-new-message-content",
                 ".message-content",
                 ".answer-content",
                 ".response-content",
@@ -126,11 +127,20 @@ class QwenAdapter(BaseAdapter):
                 ".ant-list-item",
                 ".chat-history-item",
                 ".msg-content",
-                ".reply-content"
+                ".reply-content",
+                "[class*='message-content']",
+                "[class*='answer']",
+                "[class*='response']"
             ]
 
             max_wait = 60
+            last_answer = ""
+            stable_count = 0
+            stable_threshold = 3
+            question_text = "你好，请介绍一下你自己"
+            
             for _ in range(max_wait):
+                current_text = ""
                 for selector in answer_selectors:
                     try:
                         elems = await self.page.query_selector_all(selector)
@@ -140,30 +150,31 @@ class QwenAdapter(BaseAdapter):
                             if is_visible:
                                 text = await last.inner_text()
                                 if text and len(text.strip()) > 10:
-                                    logger.info(f"千问成功获取回答：{text[:30]}...")
-                                    return text.strip()
+                                    if text.strip() == question_text:
+                                        continue
+                                    if text.strip().startswith(question_text):
+                                        continue
+                                    current_text = text.strip()
+                                    break
                     except Exception as e:
                         logger.debug(f"获取回答 {selector} 失败：{str(e)}")
                         continue
+                
+                if current_text:
+                    if current_text == last_answer:
+                        stable_count += 1
+                        if stable_count >= stable_threshold:
+                            logger.info(f"千问成功获取回答：{current_text[:30]}...")
+                            return current_text
+                    else:
+                        stable_count = 0
+                        last_answer = current_text
+                
                 try:
-                    loading_elements = await self.page.query_selector_all(".loading,.typing")
+                    loading_elements = await self.page.query_selector_all(".loading,.typing,[class*='loading'],[class*='typing']")
                     is_loading = any(await e.is_visible() for e in loading_elements) if loading_elements else False
-                    if not is_loading:
-                        textarea = await self.page.query_selector("textarea")
-                        if textarea:
-                            is_disabled = await textarea.get_attribute("disabled")
-                            if is_disabled is None:
-                                for selector in answer_selectors:
-                                    try:
-                                        answer_elements = await self.page.query_selector_all(selector)
-                                        if answer_elements and len(answer_elements) > 0:
-                                            last_answer = answer_elements[-1]
-                                            answer = await last_answer.inner_text()
-                                            if answer and len(answer.strip()) > 10:
-                                                logger.info(f"千问成功获取回答：{answer[:30]}...")
-                                                return answer.strip()
-                                    except Exception as e:
-                                        continue
+                    if not is_loading and last_answer:
+                        return last_answer
                 except Exception as e:
                     pass
 
@@ -176,9 +187,17 @@ class QwenAdapter(BaseAdapter):
             logger.error(f"千问获取回答失败：{str(e)}")
             return f"获取回答失败：{str(e)}"
 
-    async def screenshot(self, question: Question) -> tuple[Optional[str], bool, Optional[str]]:
+    async def _check_login_url_pattern(self, url: str) -> bool:
+        url_lower = url.lower()
+        if "login" in url_lower or "signin" in url_lower:
+            return False
+        elif "chat" in url_lower or "qwen" in url_lower:
+            return True
+        return None
+
+    async def screenshot(self, question: Question) -> tuple[Optional[str], bool, Optional[str], Optional[str]]:
         if self.page is None:
-            return None, False, None
+            return None, False, None, None
 
         try:
             from src.utils.screenshot import ScreenshotTool
@@ -188,6 +207,7 @@ class QwenAdapter(BaseAdapter):
             await self.page.wait_for_timeout(3000)
 
             share_link = None
+            share_link_error = None
 
             logger.info(f"{self.platform_id} 步骤1：查找分享按钮...")
             share_button_selectors = [
@@ -220,38 +240,43 @@ class QwenAdapter(BaseAdapter):
                     await self.page.wait_for_timeout(1000)
                     logger.info(f"{self.platform_id} 点击复制链接按钮")
                     logger.info(f"{self.platform_id} 链接已复制到剪贴板")
+                else:
+                    share_link_error = "未找到复制链接按钮"
             else:
+                share_link_error = "分享按钮未找到"
                 logger.warning(f"{self.platform_id} 分享按钮未找到")
 
             logger.info(f"{self.platform_id} 步骤3：执行截图...")
-            screenshot_path, is_shared_image, _ = await screenshot_tool.capture_from_page(
+            screenshot_path, is_shared_image, share_link, share_err = await screenshot_tool.capture_from_page(
                 self.page,
                 self.platform_id,
                 question
             )
+            if share_err and not share_link_error:
+                share_link_error = share_err
 
-            return screenshot_path, is_shared_image, share_link
+            return screenshot_path, is_shared_image, share_link, share_link_error
 
         except Exception as e:
             logger.error(f"{self.platform_id} 截图失败：{str(e)}")
             return await self._default_screenshot(question)
 
-    async def _default_screenshot(self, question: Question) -> tuple[Optional[str], bool, Optional[str]]:
+    async def _default_screenshot(self, question: Question) -> tuple[Optional[str], bool, Optional[str], Optional[str]]:
         try:
             from src.utils.screenshot import ScreenshotTool
             screenshot_tool = ScreenshotTool()
 
             await self.page.wait_for_timeout(1000)
-            screenshot_path, is_shared_image, share_link = await screenshot_tool.capture_from_page(
+            screenshot_path, is_shared_image, share_link, share_link_error = await screenshot_tool.capture_from_page(
                 self.page,
                 self.platform_id,
                 question
             )
-            return screenshot_path, is_shared_image, share_link
+            return screenshot_path, is_shared_image, share_link, share_link_error
 
         except Exception as e:
             logger.error(f"{self.platform_id} 默认截图失败：{str(e)}")
-            return None, False, None
+            return None, False, None, str(e)
 
     async def close(self):
         await super().close()

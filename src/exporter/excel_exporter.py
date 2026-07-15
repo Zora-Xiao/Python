@@ -41,7 +41,8 @@ class ExcelExporter:
                 "时间": result.timestamp.strftime("%Y-%m-%d %H:%M:%S") if result.timestamp else "",
                 "截图类型": image_note,
                 "截图路径": result.screenshot_path or "",
-                "分享链接": result.share_link or ""
+                "分享链接": result.share_link or "",
+                "分享链接失败原因": result.share_link_error or ""
             })
         
         df = pd.DataFrame(data)
@@ -118,6 +119,7 @@ class ExcelExporter:
         ws.column_dimensions['I'].width = 20
         ws.column_dimensions['J'].width = 40
         ws.column_dimensions['K'].width = 50
+        ws.column_dimensions['L'].width = 50
         
         for idx, result in enumerate(results, start=2):
             if result.screenshot_path:

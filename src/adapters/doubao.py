@@ -1,4 +1,6 @@
 # -*- coding: utf-8 -*-
+import random
+import time
 from typing import Optional
 from src.adapters.base import BaseAdapter
 from src.models.question import Question
@@ -108,6 +110,116 @@ class DoubaoAdapter(BaseAdapter):
             logger.error(f"豆包登录失败：{str(e)}")
             return False
 
+    async def _check_captcha(self) -> bool:
+        """检测页面是否出现人机验证（CAPTCHA）
+        返回 True 表示检测到验证码，False 表示未检测到"""
+        try:
+            captcha_indicators = [
+                # 关键词检测
+                "验证",
+                "人机",
+                "captcha",
+                "滑块",
+                "图片验证",
+                "选择图片",
+                "安全验证",
+                "请选择",
+                # CSS选择器检测
+                ".captcha",
+                "[class*='captcha']",
+                "[class*='verify']",
+                "[class*='slider']",
+                "[class*='challenge']",
+                "[data-captcha]",
+                ".geetest",
+                ".gt_captcha",
+                "#captcha",
+                ".security-check",
+                "[class*='security']"
+            ]
+
+            page_content = await self.page.content()
+            page_text = await self.page.inner_text()
+            
+            page_lower = page_text.lower()
+            content_lower = page_content.lower()
+
+            for indicator in captcha_indicators:
+                if indicator.lower() in page_lower or indicator.lower() in content_lower:
+                    logger.warning(f"豆包检测到验证码关键词: {indicator}")
+                    return True
+
+            for selector in [
+                ".captcha", "[class*='captcha']", "[class*='verify']",
+                "[class*='slider']", "[class*='challenge']", "[data-captcha]",
+                ".geetest", ".gt_captcha", "#captcha", ".security-check"
+            ]:
+                try:
+                    elements = await self.page.query_selector_all(selector)
+                    if elements:
+                        for elem in elements:
+                            if await elem.is_visible():
+                                logger.warning(f"豆包检测到验证码元素: {selector}")
+                                return True
+                except Exception:
+                    continue
+
+            return False
+        except Exception as e:
+            logger.debug(f"豆包验证码检测异常: {str(e)}")
+            return False
+
+    async def _handle_captcha(self) -> bool:
+        """处理验证码：根据配置决定等待用户手动处理或直接失败
+        返回 True 表示处理成功（用户手动完成验证），False 表示处理失败或超时"""
+        captcha_config = self.config.get("captcha_handling", {})
+        mode = captcha_config.get("mode", "fail")
+        timeout = captcha_config.get("timeout", 120)
+        platforms = captcha_config.get("platforms", [])
+
+        if self.platform_id not in platforms:
+            return False
+
+        if mode == "fail":
+            logger.error("豆包检测到验证码，配置为fail模式，标记失败")
+            return False
+
+        logger.warning(f"豆包检测到验证码，等待用户手动处理... (超时时间: {timeout}秒)")
+        
+        start_time = time.time()
+        while time.time() - start_time < timeout:
+            await self.page.wait_for_timeout(3000)
+            
+            if not await self._check_captcha():
+                logger.info("豆包验证码已被用户手动完成")
+                return True
+            
+            elapsed = int(time.time() - start_time)
+            logger.info(f"豆包等待验证码处理中... ({elapsed}/{timeout}秒)")
+
+        logger.error(f"豆包验证码等待超时 ({timeout}秒)")
+        return False
+
+    async def _simulate_human_behavior(self):
+        """模拟人类行为：添加随机延迟、鼠标移动等"""
+        try:
+            await self.page.wait_for_timeout(random.randint(500, 1500))
+            
+            viewport = await self.page.viewport_size
+            if viewport:
+                target_x = random.randint(100, viewport.get("width", 1920) - 100)
+                target_y = random.randint(100, viewport.get("height", 1080) - 100)
+                
+                await self.page.mouse.move(target_x, target_y)
+                await self.page.wait_for_timeout(random.randint(200, 500))
+                
+                await self.page.mouse.move(
+                    target_x + random.randint(-50, 50),
+                    target_y + random.randint(-50, 50)
+                )
+        except Exception as e:
+            logger.debug(f"模拟人类行为异常: {str(e)}")
+
     async def _navigate_to_chat(self) -> bool:
         try:
             await self.page.goto(self.platform_url, wait_until="domcontentloaded", timeout=60000)
@@ -119,6 +231,12 @@ class DoubaoAdapter(BaseAdapter):
 
     async def _send_message(self, question: str) -> None:
         try:
+            await self._simulate_human_behavior()
+
+            if await self._check_captcha():
+                if not await self._handle_captcha():
+                    raise Exception("验证码处理失败")
+
             input_selectors = [
                 "textarea",
                 "textarea[placeholder*='ask']",
@@ -142,9 +260,9 @@ class DoubaoAdapter(BaseAdapter):
                 raise Exception("输入框未找到")
 
             await self.page.click(input_selector)
-            await self.page.wait_for_timeout(500)
+            await self.page.wait_for_timeout(random.randint(300, 800))
             await self.page.fill(input_selector, question)
-            await self.page.wait_for_timeout(500)
+            await self.page.wait_for_timeout(random.randint(300, 800))
             await self.page.press(input_selector, "Enter")
 
             logger.info(f"豆包发送消息：{question[:30]}...")
@@ -179,8 +297,14 @@ class DoubaoAdapter(BaseAdapter):
             max_wait = 120
             last_text = ""
             stable_count = 0
+            question_text = "你好，请介绍一下你自己"
             
             for _ in range(max_wait):
+                if await self._check_captcha():
+                    logger.warning("豆包获取回答过程中检测到验证码")
+                    if not await self._handle_captcha():
+                        return "验证码处理失败"
+
                 for selector in answer_selectors:
                     try:
                         elems = await self.page.query_selector_all(selector)
@@ -192,21 +316,23 @@ class DoubaoAdapter(BaseAdapter):
                                 text = text.strip()
                                 
                                 if text and len(text) > 10:
-                                    # 检测流式输出是否稳定（内容不再变化）
+                                    if text == question_text:
+                                        continue
+                                    if text.strip().startswith(question_text):
+                                        continue
+                                        
                                     if text == last_text:
                                         stable_count += 1
                                     else:
                                         last_text = text
                                         stable_count = 0
                                     
-                                    # 内容稳定3秒且长度超过30字符认为回答完成
                                     if stable_count >= 3 and len(text) > 30:
                                         logger.info(f"豆包成功获取回答：{text[:30]}...")
                                         return text
                     except Exception as e:
                         continue
                 
-                # 尝试通过data-message-id定位最新消息
                 try:
                     messages = await self.page.query_selector_all("[data-message-id]")
                     if messages and len(messages) > 0:
@@ -214,6 +340,11 @@ class DoubaoAdapter(BaseAdapter):
                         content = await last_msg.inner_text()
                         content = content.strip()
                         if content and len(content) > 10:
+                            if content == question_text:
+                                continue
+                            if content.strip().startswith(question_text):
+                                continue
+                                
                             if content == last_text:
                                 stable_count += 1
                             else:
@@ -228,7 +359,6 @@ class DoubaoAdapter(BaseAdapter):
                     
                 await self.page.wait_for_timeout(1000)
 
-            # 如果超时但有部分内容，返回已获取的内容
             if last_text and len(last_text) > 10:
                 logger.warning(f"豆包回答获取超时，返回已获取内容：{last_text[:30]}...")
                 return last_text
@@ -240,7 +370,7 @@ class DoubaoAdapter(BaseAdapter):
             logger.error(f"豆包获取回答失败：{str(e)}")
             return "获取回答失败"
 
-    async def screenshot(self, question: Question) -> tuple[Optional[str], bool, Optional[str]]:
+    async def screenshot(self, question: Question) -> tuple[Optional[str], bool, Optional[str], Optional[str]]:
         """
         优化后的截图逻辑：
         1. 尝试通过UI交互生成分享图片/链接。
@@ -248,7 +378,7 @@ class DoubaoAdapter(BaseAdapter):
         3. 如果分享流程任何环节失败，降级为默认页面截图。
         """
         if self.page is None:
-            return None, False, None
+            return None, False, None, None
 
         try:
             logger.info("豆包开始尝试生成分享图片...")
@@ -356,21 +486,18 @@ class DoubaoAdapter(BaseAdapter):
                     
                     await overlay_elem.screenshot(path=file_path)
                     logger.info(f"豆包成功截取分享图片: {file_path}")
-                    return file_path, True, share_link
+                    return file_path, True, share_link, None
 
                 else:
-                    # 分享了但没找到预览层，可能只是打开了分享菜单，没生成图片
                     logger.warning("豆包分享后未找到预览层，回退到默认截图")
                     return await self._default_screenshot(question)
 
             else:
-                # 分享流程失败，执行默认截图
                 logger.info("豆包分享流程失败，执行默认页面截图")
                 return await self._default_screenshot(question)
 
         except Exception as e:
             logger.error(f"豆包截图逻辑异常：{str(e)}")
-            # 发生任何异常，确保至少有一张默认截图
             return await self._default_screenshot(question)
 
     async def _find_visible_element(self, selectors: list, timeout: int = 5000) -> Optional[object]:
@@ -388,22 +515,22 @@ class DoubaoAdapter(BaseAdapter):
                 continue
         return None
 
-    async def _default_screenshot(self, question: Question) -> tuple[Optional[str], bool, Optional[str]]:
+    async def _default_screenshot(self, question: Question) -> tuple[Optional[str], bool, Optional[str], Optional[str]]:
         try:
             from src.utils.screenshot import ScreenshotTool
             screenshot_tool = ScreenshotTool()
 
             await self.page.wait_for_timeout(1000)
-            screenshot_path, is_shared_image, share_link = await screenshot_tool.capture_from_page(
+            screenshot_path, is_shared_image, share_link, share_link_error = await screenshot_tool.capture_from_page(
                 self.page,
                 self.platform_id,
                 question
             )
-            return screenshot_path, is_shared_image, share_link
+            return screenshot_path, is_shared_image, share_link, share_link_error
 
         except Exception as e:
             logger.error(f"豆包默认截图失败：{str(e)}")
-            return None, False, None
+            return None, False, None, str(e)
 
     async def close(self):
         await super().close()

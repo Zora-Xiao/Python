@@ -19,6 +19,14 @@ class DeepseekAdapter(BaseAdapter):
         # DeepSeek 不保存 cookies，每次都重新登录
         logger.info(f"{self.name} DeepSeek 不保存 Cookie")
 
+    async def _check_login_url_pattern(self, url: str) -> bool:
+        url_lower = url.lower()
+        if "sign_in" in url_lower or "login" in url_lower:
+            return False
+        elif "chat" in url_lower and "deepseek" in url_lower:
+            return True
+        return None
+
     async def _prepare_cookies_if_needed(self):
         """DeepSeek平台每次都自动登录，不依赖cookies"""
         logger.info(f"{self.name} DeepSeek平台每次都自动登录，不检查cookies")
@@ -35,39 +43,18 @@ class DeepseekAdapter(BaseAdapter):
             if self.username and self.password:
                 logger.info(f"{self.name} 开始自动登录...")
                 if await self._execute_login():
-                    await self.page.wait_for_timeout(3000)
+                    await self.page.wait_for_timeout(5000)
+                    
+                    current_url = self.page.url
+                    logger.info(f"{self.name} 自动登录后URL: {current_url}")
+                    
+                    if "sign_in" in current_url or "login" in current_url:
+                        logger.info(f"{self.name} 仍然在登录页面，尝试导航到聊天页面")
+                        await self.page.goto("https://chat.deepseek.com/", wait_until="domcontentloaded", timeout=60000)
+                        await self.page.wait_for_timeout(5000)
+                    
                     if await self._check_login_status():
                         logger.info(f"{self.name} 自动登录成功")
-                        await self._save_cookies(self.page.context)
-                        logger.info(f"{self.name} cookies已保存（即使可能无法使用）")
-                        return
-                    else:
-                        logger.warning(f"{self.name} 自动登录后未检测到登录状态")
-                else:
-                    logger.warning(f"{self.name} 自动登录失败")
-            else:
-                logger.warning(f"{self.name} 未配置用户名和密码，无法自动登录")
-
-        except Exception as e:
-            logger.error(f"{self.name} 自动登录过程错误: {str(e)}")
-
-        try:
-            navigate_url = self.login_url if self.login_url else self.platform_url
-            if navigate_url:
-                logger.info(f"{self.name} 导航到: {navigate_url}")
-                await self.page.goto(navigate_url, wait_until="domcontentloaded", timeout=60000)
-            else:
-                logger.warning(f"{self.name} 未配置login_url或platform_url，无法导航")
-                return
-
-            if self.username and self.password:
-                logger.info(f"{self.name} 开始自动登录...")
-                if await self._execute_login():
-                    await self.page.wait_for_timeout(3000)
-                    if await self._check_login_status():
-                        logger.info(f"{self.name} 自动登录成功")
-                        await self._save_cookies(self.page.context)
-                        logger.info(f"{self.name} cookies已保存（即使可能无法使用）")
                         return
                     else:
                         logger.warning(f"{self.name} 自动登录后未检测到登录状态")
@@ -82,8 +69,8 @@ class DeepseekAdapter(BaseAdapter):
     async def _execute_login(self) -> bool:
         try:
             logger.info("Deepseek 开始登录过程...")
+            login_success = False
 
-            # 1. 等待初始页面加载
             await self.page.wait_for_timeout(5000)
 
             logger.info("Deepseek 步骤1: 查找登录按钮")
@@ -120,7 +107,6 @@ class DeepseekAdapter(BaseAdapter):
 
             logger.info("Deepseek 步骤2: 点击密码登录按钮（使用精确选择器）")
             try:
-                # 使用精确的类名选择器
                 password_login_button = await self.page.wait_for_selector("button.ds-link-button.ds-sign-in-form__social-link", timeout=10000)
                 if password_login_button:
                     await password_login_button.click()
@@ -129,7 +115,6 @@ class DeepseekAdapter(BaseAdapter):
                     raise Exception("未找到密码登录按钮")
             except Exception as e:
                 logger.warning(f"Deepseek: 精确选择器密码登录点击失败: {e}")
-                # 回退：尝试其他方式
                 try:
                     password_login_selectors = [
                         "button:has-text('密码登录')",
@@ -159,17 +144,17 @@ class DeepseekAdapter(BaseAdapter):
             logger.info("Deepseek: 已切换到密码登录")
 
             logger.info("Deepseek 步骤3: 输入用户名（使用Playwright）")
+            username_filled = False
             try:
                 await self.page.wait_for_timeout(2000)
-                # 使用Playwright选择器查找用户名输入框
                 username_input = await self.page.wait_for_selector("input[type='text'], input[type='email'], input[placeholder*='手机号'], input[placeholder*='邮箱'], input[placeholder*='账号']", timeout=5000)
                 if username_input:
                     await username_input.fill(self.username.strip())
                     await self.page.wait_for_timeout(500)
-                    # 验证输入
                     value = await username_input.input_value()
                     if value == self.username.strip():
                         logger.info(f"Deepseek: 用户名输入成功，值: {value[:3]}***")
+                        username_filled = True
                     else:
                         logger.warning(f"Deepseek: 用户名输入失败，期望: {self.username[:3]}***，实际: {value[:3]}***")
                 else:
@@ -180,8 +165,7 @@ class DeepseekAdapter(BaseAdapter):
             logger.info("Deepseek 步骤4: 输入密码（使用Playwright locator）")
             password_filled = False
             try:
-                await self.page.wait_for_timeout(2000)  # 等待密码输入框加载
-                # 使用Playwright locator直接填充，不等待
+                await self.page.wait_for_timeout(2000)
                 password_selectors = [
                     "input[type='password']",
                     "input[placeholder*='密码']",
@@ -193,14 +177,12 @@ class DeepseekAdapter(BaseAdapter):
 
                 for selector in password_selectors:
                     try:
-                        # 使用locator和first，不等待
                         password_input = self.page.locator(selector).first
                         if await password_input.count() > 0:
                             is_visible = await password_input.is_visible()
                             if is_visible:
                                 await password_input.fill(self.password.strip())
                                 await self.page.wait_for_timeout(500)
-                                # 验证输入
                                 value = await password_input.input_value()
                                 if len(value) > 0:
                                     logger.info(f"Deepseek: 密码输入成功，长度: {len(value)}")
@@ -249,14 +231,19 @@ class DeepseekAdapter(BaseAdapter):
                     """, self.password.strip())
                     await self.page.wait_for_timeout(500)
                     logger.info("Deepseek: JavaScript密码填充完成")
+                    password_filled = True
             except Exception as e:
                 logger.warning(f"Deepseek 密码输入异常: {e}")
 
+            if not username_filled or not password_filled:
+                logger.error("Deepseek: 用户名或密码输入失败")
+                return False
+
             logger.info("Deepseek 步骤5: 提交登录（使用精确选择器）")
+            submit_success = False
             try:
                 await self.page.wait_for_timeout(2000)
                 
-                # 列出所有可见的按钮供调试
                 buttons_info = await self.page.evaluate("""
                     () => {
                         const buttons = Array.from(document.querySelectorAll('button'));
@@ -277,14 +264,12 @@ class DeepseekAdapter(BaseAdapter):
                 """)
                 logger.info(f"Deepseek: 找到 {len(buttons_info)} 个可见按钮: {buttons_info}")
                 
-                # 尝试使用button[type="submit"]的登录按钮
                 submit_btn = await self.page.query_selector("button[type='submit']")
                 if submit_btn and await submit_btn.is_visible():
                     await submit_btn.click()
                     logger.info("Deepseek: 通过type=submit点击登录按钮")
+                    submit_success = True
                 else:
-                    # 尝试查找包含"登录"的按钮
-                    login_btn_found = False
                     for btn_info in buttons_info:
                         if '登录' in btn_info['text'] or 'Sign' in btn_info['text']:
                             logger.info(f"Deepseek: 准备点击登录按钮: {btn_info}")
@@ -303,60 +288,92 @@ class DeepseekAdapter(BaseAdapter):
                                         return false;
                                     }
                                 """, btn_info)
-                                login_btn_found = True
+                                submit_success = True
                                 logger.info("Deepseek: JavaScript点击登录按钮成功")
                                 break
                             except Exception as e:
                                 logger.warning(f"Deepseek: JavaScript点击登录按钮失败: {e}")
                     
-                    if not login_btn_found:
-                        raise Exception("未找到登录按钮")
+                    if not submit_success:
+                        logger.warning("Deepseek: 未找到登录按钮，尝试其他选择器")
+                        submit_selectors = [
+                            "button[type='submit']",
+                            "button:has-text('登录')",
+                            "button:has-text('Sign in')",
+                            ".ds-button--primary",
+                            "[class*='primary']"
+                        ]
+                        for sel in submit_selectors:
+                            try:
+                                elements = await self.page.query_selector_all(sel)
+                                if elements:
+                                    for elem in elements:
+                                        if await elem.is_visible():
+                                            await elem.click()
+                                            logger.info(f"Deepseek: Playwright点击登录按钮成功: {sel}")
+                                            submit_success = True
+                                            break
+                                    if submit_success:
+                                        break
+                            except:
+                                continue
                         
             except Exception as e:
                 logger.warning(f"Deepseek: 登录按钮点击失败: {e}")
-                # 回退：尝试Playwright查找
-                try:
-                    submit_selectors = [
-                        "button[type='submit']",
-                        "button:has-text('登录')",
-                        "button:has-text('Sign in')"
-                    ]
-                    for sel in submit_selectors:
-                        try:
-                            elements = await self.page.query_selector_all(sel)
-                            if elements:
-                                for elem in elements:
-                                    if await elem.is_visible():
-                                        await elem.click()
-                                        logger.info(f"Deepseek: Playwright点击登录按钮成功: {sel}")
-                                        break
-                        except:
-                            continue
-                except Exception as e2:
-                    logger.warning(f"Deepseek: Playwright登录按钮点击失败: {e2}")
+                submit_selectors = [
+                    "button[type='submit']",
+                    "button:has-text('登录')",
+                    "button:has-text('Sign in')",
+                    ".ds-button--primary",
+                    "[class*='primary']"
+                ]
+                for sel in submit_selectors:
+                    try:
+                        elements = await self.page.query_selector_all(sel)
+                        if elements:
+                            for elem in elements:
+                                if await elem.is_visible():
+                                    await elem.click()
+                                    logger.info(f"Deepseek: Playwright点击登录按钮成功: {sel}")
+                                    submit_success = True
+                                    break
+                            if submit_success:
+                                break
+                    except:
+                        continue
+
+            if not submit_success:
+                logger.error("Deepseek: 登录按钮点击失败")
+                return False
 
             logger.info("Deepseek: 等待登录请求完成...")
-            await self.page.wait_for_timeout(10000)  # 等待10秒
-            # 检查当前URL，判断是否需要导航
+            await self.page.wait_for_timeout(10000)
             current_url = self.page.url
             logger.info(f"Deepseek: 当前URL: {current_url}")
-            # 如果还在登录页面，再等待10秒
+            
             if "sign_in" in current_url or "login" in current_url:
                 logger.info("Deepseek: 还在登录页面，继续等待...")
                 await self.page.wait_for_timeout(10000)
+                current_url = self.page.url
+                logger.info(f"Deepseek: 等待后URL: {current_url}")
 
-            # 尝试导航到聊天页面
-            logger.info("Deepseek: 尝试导航到聊天页面...")
-            try:
-                await self.page.goto("https://chat.deepseek.com/", wait_until="domcontentloaded", timeout=30000)
-                await self.page.wait_for_timeout(3000)
-                logger.info(f"Deepseek: 导航后URL: {self.page.url}")
-            except Exception as e:
-                logger.warning(f"Deepseek: 导航失败: {e}")
+            if "sign_in" in current_url or "login" in current_url:
+                logger.info("Deepseek: 仍然在登录页面，尝试重新导航")
+                try:
+                    await self.page.goto("https://chat.deepseek.com/", wait_until="domcontentloaded", timeout=30000)
+                    await self.page.wait_for_timeout(5000)
+                    current_url = self.page.url
+                    logger.info(f"Deepseek: 重新导航后URL: {current_url}")
+                except Exception as e:
+                    logger.warning(f"Deepseek: 重新导航失败: {e}")
 
-            logger.info("Deepseek: 登录请求等待完成")
-            await self._save_cookies(self.page.context)
-            return True
+            login_success = not ("sign_in" in current_url or "login" in current_url)
+            logger.info(f"Deepseek: 登录成功判断: {login_success}, 当前URL: {current_url}")
+            
+            if login_success:
+                await self._save_cookies(self.page.context)
+            
+            return login_success
         except Exception as e:
             logger.error(f"Deepseek 登录失败: {str(e)}")
             return False
@@ -490,7 +507,7 @@ class DeepseekAdapter(BaseAdapter):
             logger.error(f"Deepseek 获取回答失败: {str(e)}")
             return ""
 
-    async def screenshot(self, question: Question) -> tuple[Optional[str], bool, Optional[str]]:
+    async def screenshot(self, question: Question) -> tuple[Optional[str], bool, Optional[str], Optional[str]]:
         try:
             logger.info("deepseek 等待AI回复完全完成...")
             await self.page.wait_for_timeout(5000)  # 等待5秒确保回复彻底完成
@@ -587,7 +604,7 @@ class DeepseekAdapter(BaseAdapter):
 
             if not share_button:
                 logger.warning("deepseek 分享按钮未找到，使用默认截图")
-                return await self._default_screenshot(question, answer)
+                return await self._default_screenshot(question)
             
             # 第三步：点击分享按钮
             logger.info("deepseek 步骤3: 点击分享按钮...")
@@ -640,7 +657,7 @@ class DeepseekAdapter(BaseAdapter):
             
             # 第四步：保存全屏截图
             logger.info("deepseek 步骤4: 保存全屏截图...")
-            default_screenshot_path, _, _ = await self._default_screenshot(question, answer)
+            default_screenshot_path, _, _, _ = await self._default_screenshot(question)
             
             # 第五步：等待弹窗出现并点击相关按钮
             logger.info("deepseek 步骤5: 等待弹窗...")
@@ -723,6 +740,7 @@ class DeepseekAdapter(BaseAdapter):
                 if button_found:
                     break
             
+            share_link_error = None
             if button_found:
                 await self.page.wait_for_timeout(2000)
                 # 尝试获取链接
@@ -738,20 +756,25 @@ class DeepseekAdapter(BaseAdapter):
                             if link_input:
                                 share_link = await link_input.input_value()
                                 logger.info(f"deepseek 从输入框获取链接: {share_link}")
+                            else:
+                                share_link_error = "剪贴板和输入框均未获取到链接"
                         except:
                             share_link = None
+                            share_link_error = "查找链接输入框失败"
                 except Exception as e:
+                    share_link_error = f"获取链接失败: {str(e)}"
                     logger.debug(f"deepseek 获取链接失败: {str(e)}")
             else:
+                share_link_error = "未找到分享相关按钮"
                 logger.warning("deepseek 未找到分享相关按钮，仅保存截图")
 
-            return default_screenshot_path, False, share_link
+            return default_screenshot_path, False, share_link, share_link_error
 
         except Exception as e:
             logger.error(f"deepseek 截图失败: {str(e)}")
             return await self._default_screenshot(question)
 
-    async def _default_screenshot(self, question: Question) -> tuple[Optional[str], bool, Optional[str]]:
+    async def _default_screenshot(self, question: Question) -> tuple[Optional[str], bool, Optional[str], Optional[str]]:
         try:
             from datetime import datetime
             from pathlib import Path
@@ -767,11 +790,11 @@ class DeepseekAdapter(BaseAdapter):
             await self.page.screenshot(path=str(screenshot_path), full_page=True)
             logger.info(f"deepseek全屏截图已保存：{screenshot_path}")
             
-            return str(screenshot_path), False, None
+            return str(screenshot_path), False, None, None
 
         except Exception as e:
             logger.error(f"deepseek 默认截图失败: {str(e)}")
-            return None, False, None
+            return None, False, None, str(e)
 
     async def close(self):
         await super().close()

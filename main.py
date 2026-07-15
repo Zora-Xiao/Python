@@ -74,7 +74,12 @@ class AIEvaluationTool:
                 keywords=r.get('keywords'),
                 pattern=r.get('pattern'),
                 priority=r.get('priority', 1),
-                label=r.get('label', '')
+                label=r.get('label', ''),
+                min_length=r.get('min_length'),
+                max_length=r.get('max_length'),
+                quality_keywords=r.get('quality_keywords'),
+                quality_type=r.get('quality_type'),
+                relevance_keywords=r.get('relevance_keywords')
             ))
         logger.info(f"加载了 {len(rules)} 个规则")
         return rules
@@ -95,7 +100,12 @@ class AIEvaluationTool:
             if platform_config.get('enabled', False):
                 adapter_class = adapter_classes.get(platform_id)
                 if adapter_class:
-                    config_with_name = {**platform_config, 'name': platform_id}
+                    config_with_name = {
+                        **platform_config,
+                        'name': platform_id,
+                        'captcha_handling': self.config.get('captcha_handling', {}),
+                        'browser': self.config.get('browser', {})
+                    }
                     adapter = adapter_class(config_with_name)
                     adapters.append(adapter)
                     logger.info(f"加载适配器: {adapter.name}")

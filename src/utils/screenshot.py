@@ -152,8 +152,12 @@ class ScreenshotTool:
             logger.error(f"{platform_id}等待回复完成时发生错误: {str(e)}")
             return False
 
-    async def download_shared_image(self, page: Page, platform_id: str, question: Question) -> Optional[str]:
-        """尝试从AI平台下载分享图片"""
+    async def download_shared_image(self, page: Page, platform_id: str, question: Question) -> tuple[Optional[str], Optional[str], Optional[str]]:
+        """尝试从AI平台下载分享图片
+
+        Returns:
+            tuple[shared_image_path, share_link, share_error]
+        """
         if platform_id == "qwen":
             return await self._qwen_download_shared_image(page, question)
         elif platform_id == "deepseek":
@@ -161,11 +165,11 @@ class ScreenshotTool:
         else:
             return await self._doubao_download_shared_image(page, platform_id, question)
 
-    async def capture_from_page(self, page: Page, platform_id: str, question: Question) -> tuple[Optional[str], bool, Optional[str]]:
+    async def capture_from_page(self, page: Page, platform_id: str, question: Question) -> tuple[Optional[str], bool, Optional[str], Optional[str]]:
         """截取页面全屏截图并尝试获取分享图片
 
         Returns:
-            tuple[screenshot_path, is_shared_image, share_link]
+            tuple[screenshot_path, is_shared_image, share_link, share_link_error]
         """
         try:
             screenshot_path = self.screenshot_dir / f"{platform_id}_{question.id}_{question.timestamp.strftime('%Y%m%d_%H%M%S')}_full.png"
@@ -178,19 +182,19 @@ class ScreenshotTool:
             )
             logger.info(f"{platform_id}全屏截图已保存：{screenshot_path}")
 
-            shared_image_path = await self.download_shared_image(page, platform_id, question)
+            shared_image_path, share_link, share_error = await self.download_shared_image(page, platform_id, question)
             is_shared = shared_image_path is not None
 
             if is_shared:
-                return shared_image_path, True, None
+                return shared_image_path, True, share_link, share_error
             else:
-                return str(screenshot_path), False, None
+                return str(screenshot_path), False, share_link, share_error
 
         except Exception as e:
             logger.error(f"{platform_id}截图失败：{str(e)}")
-            return None, False, None
+            return None, False, None, str(e)
 
-    async def _doubao_download_shared_image(self, page: Page, platform_id: str, question: Question) -> Optional[str]:
+    async def _doubao_download_shared_image(self, page: Page, platform_id: str, question: Question) -> tuple[Optional[str], Optional[str], Optional[str]]:
         """豆包平台：三步流程下载分享图片（分享会话 → 分享图片 → 下载图片）"""
         try:
             download_path = self.screenshot_dir / f"{platform_id}_{question.id}_{question.timestamp.strftime('%Y%m%d_%H%M%S')}_shared.png"
@@ -268,7 +272,7 @@ class ScreenshotTool:
 
             if not share_session_button:
                 logger.info(f"{platform_id}【第一步】未找到分享会话按钮，将使用页面截图")
-                return None
+                return None, None, "未找到分享会话按钮"
 
             logger.info(f"{platform_id}【第一步】点击分享会话按钮...")
             await share_session_button.click()
@@ -331,7 +335,7 @@ class ScreenshotTool:
             if not share_image_button:
                 await page.keyboard.press("Escape")
                 logger.info(f"{platform_id}【第二步】未找到分享图片按钮，将使用页面截图")
-                return None
+                return None, None, "未找到分享图片按钮"
 
             logger.info(f"{platform_id}【第二步】点击分享图片按钮...")
             await share_image_button.click()
@@ -392,7 +396,7 @@ class ScreenshotTool:
             if not download_button_element:
                 await page.keyboard.press("Escape")
                 logger.info(f"{platform_id}【第三步】未找到下载图片按钮，将使用页面截图")
-                return None
+                return None, None, "未找到下载图片按钮"
 
             # 执行下载
             async with page.expect_download() as download_info:
@@ -404,7 +408,7 @@ class ScreenshotTool:
 
             await page.keyboard.press("Escape")
             logger.info(f"{platform_id}三步分享流程完成，图片已保存：{download_path}")
-            return str(download_path)
+            return str(download_path), None, None
 
         except Exception as e:
             logger.error(f"{platform_id}下载分享图片失败：{str(e)}")
@@ -412,14 +416,15 @@ class ScreenshotTool:
                 await page.keyboard.press("Escape")
             except:
                 pass
-            return None
+            return None, None, str(e)
     
-    async def _qwen_download_shared_image(self, page: Page, question: Question) -> Optional[str]:
+    async def _qwen_download_shared_image(self, page: Page, question: Question) -> tuple[Optional[str], Optional[str], Optional[str]]:
         """千问平台：三步流程（全屏截图 → 点击分享按钮 → 点击复制链接）"""
         try:
             platform_id = "qwen"
             download_path = self.screenshot_dir / f"{platform_id}_{question.id}_{question.timestamp.strftime('%Y%m%d_%H%M%S')}_shared.png"
             shared_link = None  # 初始化分享链接变量
+            share_error = None  # 初始化分享失败原因
 
             # ========== 第一步：页面全屏截图 ==========
             logger.info(f"{platform_id}【第一步】页面全屏截图...")
@@ -433,7 +438,7 @@ class ScreenshotTool:
                 logger.info(f"{platform_id}【第一步】页面全屏截图已保存：{download_path}")
             except Exception as e:
                 logger.error(f"{platform_id}【第一步】页面截图失败：{str(e)}")
-                return None
+                return None, None, str(e)
 
             # ========== 第二步：点击分享按钮（根据用户提供的HTML结构） ==========
             logger.info(f"{platform_id}【第二步】查找分享按钮...")
@@ -591,7 +596,7 @@ class ScreenshotTool:
 
             if not share_button:
                 logger.info(f"{platform_id}【第二步】所有策略都未找到分享按钮，跳过分享链接")
-                return str(download_path)
+                return str(download_path), None, "未找到分享按钮"
 
             logger.info(f"{platform_id}【第二步】点击分享按钮...")
             await share_button.click()
@@ -798,7 +803,7 @@ class ScreenshotTool:
             if not copy_button:
                 await page.keyboard.press("Escape")
                 logger.info(f"{platform_id}【第三步】所有策略都未找到复制链接按钮，跳过分享链接")
-                return str(download_path)
+                return str(download_path), None, "未找到复制链接按钮"
 
             # 清空剪贴板，确保不会被之前的内容干扰
             try:
@@ -813,7 +818,7 @@ class ScreenshotTool:
             except Exception as click_e:
                 logger.info(f"{platform_id}【第三步】点击复制链接按钮失败: {str(click_e)}")
                 await page.keyboard.press("Escape")
-                return str(download_path)
+                return str(download_path), None, f"点击复制链接按钮失败: {str(click_e)}"
             
             # 增加等待时间，确保复制操作完成
             await page.wait_for_timeout(3000)
@@ -904,10 +909,12 @@ class ScreenshotTool:
                 with open(link_path, 'w', encoding='utf-8') as f:
                     f.write(shared_link)
                 logger.info(f"{platform_id}【第四步】分享链接已保存：{link_path}")
+            else:
+                share_error = "无法从剪贴板获取分享链接"
 
             await page.keyboard.press("Escape")
             logger.info(f"{platform_id}三步分享流程完成")
-            return str(download_path)
+            return str(download_path), shared_link, share_error
 
         except Exception as e:
             logger.error(f"{platform_id}下载分享图片失败：{str(e)}")
@@ -915,14 +922,15 @@ class ScreenshotTool:
                 await page.keyboard.press("Escape")
             except:
                 pass
-            return None
+            return None, None, str(e)
     
-    async def _deepseek_download_shared_image(self, page: Page, question: Question) -> Optional[str]:
+    async def _deepseek_download_shared_image(self, page: Page, question: Question) -> tuple[Optional[str], Optional[str], Optional[str]]:
         """Deepseek平台：四步流程（全屏截图 → 点击分享按钮 → 点击创建分享链接 → 点击创建并复制）"""
         try:
             platform_id = "deepseek"
             download_path = self.screenshot_dir / f"{platform_id}_{question.id}_{question.timestamp.strftime('%Y%m%d_%H%M%S')}_shared.png"
             shared_link = None  # 初始化分享链接变量
+            share_error = None  # 初始化分享失败原因
 
             # ========== 第一步：页面全屏截图 ==========
             logger.info(f"{platform_id}【第一步】页面全屏截图...")
@@ -936,7 +944,7 @@ class ScreenshotTool:
                 logger.info(f"{platform_id}【第一步】页面全屏截图已保存：{download_path}")
             except Exception as e:
                 logger.error(f"{platform_id}【第一步】页面截图失败：{str(e)}")
-                return None
+                return None, None, str(e)
 
             # ========== 第二步：点击分享按钮（SVG图标） ==========
             logger.info(f"{platform_id}【第二步】查找分享按钮（SVG图标）...")
@@ -988,7 +996,7 @@ class ScreenshotTool:
 
             if not share_button:
                 logger.info(f"{platform_id}【第二步】未找到分享按钮，跳过分享链接")
-                return str(download_path)
+                return str(download_path), None, "未找到分享按钮"
 
             logger.info(f"{platform_id}【第二步】点击分享按钮...")
             await share_button.click()
@@ -1094,7 +1102,7 @@ class ScreenshotTool:
             if not create_link_button:
                 await page.keyboard.press("Escape")
                 logger.info(f"{platform_id}【第三步】未找到创建并复制按钮，跳过分享链接")
-                return str(download_path)
+                return str(download_path), None, "未找到创建并复制按钮"
 
             logger.info(f"{platform_id}【第三步】点击创建分享链接按钮...")
             # 在点击复制按钮前清空剪贴板，确保不会被之前的内容干扰
@@ -1142,14 +1150,15 @@ class ScreenshotTool:
                 # 关闭弹窗
                 await page.keyboard.press("Escape")
                 await page.wait_for_timeout(1000)
-                return str(download_path)
+                return str(download_path), shared_link, None
             
             # 如果还没获取到链接，返回截图路径
             logger.info(f"{platform_id}【第三步】未能获取分享链接，返回截图路径")
+            share_error = "未能获取分享链接"
             await page.keyboard.press("Escape")
             await page.wait_for_timeout(1000)
-            return str(download_path)
+            return str(download_path), None, share_error
         
         except Exception as e:
             logger.error(f"{platform_id}【第三步】分享链接获取失败: {str(e)}")
-            return str(download_path) if 'download_path' in locals() else None
+            return str(download_path) if 'download_path' in locals() else None, None, str(e)
