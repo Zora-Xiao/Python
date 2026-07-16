@@ -35,7 +35,8 @@ class Scheduler:
                     screenshot_path=result_data["screenshot_path"],
                     is_shared_image=result_data.get("is_shared_image", False),
                     error_message=result_data["error_message"],
-                    share_link=result_data.get("share_link")
+                    share_link=result_data.get("share_link"),
+                    share_link_error=result_data.get("share_link_error")
                 )
                 
                 logger.info(f"问题 {question.id} 在 {adapter.name} 处理完成，状态: {result.status}")

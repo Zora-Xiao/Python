@@ -12,8 +12,10 @@
 - ✅ **异步并发处理**：提高评测效率
 - ✅ **智能限速机制**：防止账号被封
 - ✅ **灵活的规则引擎**：支持关键词和正则匹配
+- ✅ **验证码处理**：支持手动处理和自动失败两种模式
 - ✅ **Excel 报告导出**：包含截图嵌入和详细统计
 - ✅ **详细的日志记录**：方便调试和追踪
+- ✅ **统一的适配器架构**：代码复用率高，易于扩展
 
 ### API 模式（可选）
 - 支持各平台的官方 API
@@ -29,7 +31,7 @@
 ├── .gitignore                   # Git 忽略文件
 ├── src/
 │   ├── adapters/               # 平台适配器
-│   │   ├── base.py            # 适配器基类
+│   │   ├── base.py            # 适配器基类（包含公共辅助方法）
 │   │   ├── doubao.py          # 豆包适配器
 │   │   ├── yuanbao.py         # 元宝适配器
 │   │   ├── qwen.py            # 千问适配器
@@ -45,7 +47,7 @@
 │   │   └── result.py          # 结果模型
 │   ├── utils/                  # 工具类
 │   │   ├── logger.py          # 日志工具
-│   │   ── screenshot.py      # 截图工具
+│   │   └── screenshot.py      # 截图工具
 │   └── exporter/               # 导出器
 │       └── excel_exporter.py  # Excel 导出器
 ├── tests/                      # 测试目录
@@ -144,18 +146,38 @@ rate_limit:
   max_retries: 3
 ```
 
+### 验证码处理配置
+
+```yaml
+captcha_handling:
+  mode: "manual"    # manual: 等待用户手动处理验证码 | fail: 检测到验证码时直接标记失败
+  timeout: 120      # 用户手动处理验证码的超时时间（秒）
+  platforms:        # 需要启用验证码处理的平台列表
+    - doubao
+```
+
+### 浏览器配置
+
+```yaml
+browser:
+  headless: true    # 是否使用无头模式运行
+  slow_mo: 100      # 操作间隔（毫秒），模拟人类操作速度
+  timeout: 30000    # 页面超时时间（毫秒）
+```
+
 ## 使用方法
 
 ### 基本使用（浏览器自动化模式）
 
 ```bash
-python main.py
+python main.py config.yaml sequential
 ```
 
-**首次运行说明**：
-- 浏览器会自动打开
-- 需要手动登录各个 AI 平台
-- 登录成功后，后续运行会自动使用保存的 Cookie
+**运行说明**：
+- **DeepSeek**：程序会自动登录（需配置 username 和 password），不保存 Cookie，每次运行都重新登录
+- **其他平台**：首次运行需要手动登录生成 Cookie，后续运行会自动验证 Cookie 有效性
+- 如果 Cookie 验证失败，程序会等待手动重新登录
+- **验证码处理**：当检测到验证码时，根据配置模式处理（manual：等待用户手动完成；fail：直接标记失败）
 
 ### 指定配置文件
 
@@ -194,7 +216,7 @@ python main.py config.yaml sequential
 
 ## 规则引擎
 
-规则引擎支持两种匹配方式：
+规则引擎支持多种匹配方式：
 
 ### 关键词匹配
 
@@ -212,17 +234,52 @@ type: "regex"
 pattern: "(推荐 | 建议).*(使用 | 采用 | 选择)"
 ```
 
+### 质量检测
+
+```yaml
+type: "quality"
+quality_keywords: ["好的", "没问题", "可以", "good", "great"]
+quality_type: "positive"  # positive | negative
+```
+
+### 长度校验
+
+```yaml
+type: "length"
+min_length: 10
+max_length: 2000
+```
+
+### 相关性分析
+
+```yaml
+type: "relevance"
+relevance_keywords: ["介绍", "说明", "解释", "是什么"]
+```
+
 规则按优先级从高到低匹配，可以设置多个规则。
 
 ## 平台登录说明
 
 ### 浏览器自动化模式
 
-**首次运行**：
+#### DeepSeek 平台（自动登录）
+- 程序启动时自动完成登录
+- 需要在 `config.yaml` 中配置 `username` 和 `password`
+- 无需手动登录，自动化程度高
+- 不保存 Cookie，每次运行都重新登录
+
+#### 其他平台（手动登录生成 Cookie）
+- 首次运行时需要手动登录
+- 登录成功后 Cookie 会自动保存
+- 后续运行会验证 Cookie 有效性
+- 如果 Cookie 验证失败，会等待手动重新登录
+
+**首次运行流程**：
 1. 程序会自动打开浏览器
 2. 手动登录到各个 AI 平台
 3. 浏览器会保存 Cookie 和登录状态
-4. 后续运行会自动使用保存的登录状态
+4. 后续运行会验证 Cookie 有效性
 
 **支持的平台**：
 - 豆包：https://www.doubao.com/chat/
@@ -230,6 +287,27 @@ pattern: "(推荐 | 建议).*(使用 | 采用 | 选择)"
 - 千问：https://chat.qwen.ai/
 - 文心一言：https://yiyan.baidu.com/
 - Deepseek：https://chat.deepseek.com/
+
+**平台登录配置示例**：
+
+```yaml
+platforms:
+  # 手动登录平台
+  doubao:
+    enabled: true
+    cookies_path: "cookies/doubao_cookies.json"
+  
+  yuanbao:
+    enabled: true
+    cookies_path: "cookies/yuanbao_cookies.json"
+  
+  # 自动登录平台（需要配置账号密码）
+  deepseek:
+    enabled: true
+    cookies_path: "cookies/deepseek_cookies.json"
+    username: "your_email@example.com"
+    password: "your_password"
+```
 
 ### API 模式（可选）
 
@@ -260,6 +338,16 @@ pattern: "(推荐 | 建议).*(使用 | 采用 | 选择)"
    - 首次运行需要安装 Playwright 浏览器
    - 建议在虚拟环境中运行
 
+5. **安全警告**
+   - `config.yaml` 文件包含敏感信息（用户名、密码等），**切勿提交到版本控制系统**
+   - 项目已配置 `.gitignore`，会自动忽略 `config.yaml` 和 `cookies/` 目录
+   - 建议使用环境变量管理敏感凭据，避免明文存储
+   - 示例：
+     ```bash
+     export DOUBAO_USERNAME="your_username"
+     export DOUBAO_PASSWORD="your_password"
+     ```
+
 ## 故障排除
 
 ### 常见问题
@@ -284,6 +372,11 @@ pattern: "(推荐 | 建议).*(使用 | 采用 | 选择)"
    - 确保 results 目录存在且有写入权限
    - 检查是否安装了 openpyxl
 
+6. **验证码问题**
+   - 如果配置为 manual 模式，检测到验证码时程序会暂停等待用户手动处理
+   - 如果配置为 fail 模式，检测到验证码时会直接标记失败并继续下一个平台
+   - 建议将 slow_mo 设置为 100-200ms，降低触发验证码的概率
+
 ## 开发指南
 
 ### 添加新的平台适配器
@@ -291,6 +384,11 @@ pattern: "(推荐 | 建议).*(使用 | 采用 | 选择)"
 1. 在 `src/adapters/` 目录下创建新的适配器文件
 2. 继承 `BaseAdapter` 类
 3. 实现 `_navigate_to_chat()`、`_send_message()` 和 `_get_answer()` 方法
+4. 可使用基类提供的公共方法：
+   - `_find_visible_element(selectors)` - 查找第一个可见元素
+   - `_fill_form_field(selectors, value)` - 填写表单字段
+   - `_click_button(selectors)` - 点击按钮
+   - `_robust_click(element, description)` - 健壮的点击方法
 
 示例：
 
@@ -340,6 +438,36 @@ pytest tests/
 
 ## 更新日志
 
+### v2.3.0 (2026-07-16)
+- ✨ 文心一言平台登录状态检测优化：基于页面 JSON 数据中的 `isUserLogin` 字段精确判断登录状态
+- ✨ 文心一言平台分享图片功能修复：实现分享按钮 → 生成图片 → 保存图片的完整流程
+- ✨ 文心一言平台分享链接功能：添加 URL 过滤逻辑，只保存有效的 HTTP 链接
+- ✨ 优化各平台适配器的截图流程，统一委托给 ScreenshotTool 处理
+- 🐛 修复文心一言平台已登录但日志提示未登录的问题
+- 🐛 修复文心一言平台分享按钮、生成图片按钮、保存图片按钮未找到的问题
+- 🧹 清理 ernie.py 中的调试代码和重复方法
+- 📦 更新 requirements.txt：移除未使用依赖（aiohttp, regex, python-dotenv），添加缺失依赖（pyperclip）
+
+### v2.2.0 (2026-07-15)
+- ✨ 豆包平台新增验证码（CAPTCHA）检测和处理机制
+- ✨ 支持 manual 和 fail 两种验证码处理模式
+- ✨ 优化浏览器行为：设置 slow_mo=100ms，添加随机延迟和鼠标移动模拟
+- ✨ 重构 DeepSeek 自动登录流程，添加完整的登录验证机制
+- ✨ 修复 Qwen 和 Doubao 平台回答内容误判问题（排除用户问题文本）
+- ✨ 优化登录状态检测逻辑，基于 URL 模式判断登录状态
+- 🐛 修复所有平台的登录状态误判问题
+- 🐛 修复 DeepSeek 登录按钮点击失败但返回 True 的问题
+- 🐛 修复 Ernie 截图方法参数错误问题
+- 📦 平台成功率提升至 5/5（100%）
+
+### v2.1.0 (2026-06-09)
+- ✨ 重构适配器架构，提取公共方法到 BaseAdapter 基类
+- ✨ 统一代码风格和异常处理机制
+- ✨ 优化豆包适配器的回答获取逻辑（支持流式输出检测）
+- ✨ 优化各平台适配器的登录、消息发送和截图功能
+- 🐛 修复所有代码诊断警告（未使用变量、不可达代码等）
+- 📦 代码重复率降低约 60%，代码行数减少约 200 行
+
 ### v2.0.0 (2026-05-25)
 - ✨ 新增浏览器自动化模式
 - ✨ 支持网页版对话交互
@@ -349,7 +477,6 @@ pytest tests/
 - 🐛 优化适配器架构
 
 ### v1.0.0 (2024-01-01)
-
 - 初始版本发布
 - 支持 5 个 AI 平台
 - 实现核心评测功能

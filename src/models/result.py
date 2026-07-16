@@ -16,6 +16,7 @@ class Result:
     error_message: Optional[str] = None
     timestamp: Optional[datetime] = None
     share_link: Optional[str] = None
+    share_link_error: Optional[str] = None
     
     def __post_init__(self):
         if self.matched_rules is None:
