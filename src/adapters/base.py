@@ -173,9 +173,8 @@ class BaseAdapter(ABC):
             logger.warning(f"{self.name}检查登录状态失败：{str(e)}")
             return False
     
-    async def _check_login_status(self) -> bool:
+    async def _check_login_status(self) -> Optional[bool]:
         try:
-            # 等待页面加载后再检查当前页面状态
             await self.page.wait_for_timeout(1000)
             
             logout_selectors = [
@@ -224,24 +223,11 @@ class BaseAdapter(ABC):
                     logger.debug(f"{self.name}检查选择器 {selector} 失败: {str(e)}")
                     continue
             
-            # 如果没有找到明显的登录/退出按钮，可以尝试检查输入框是否可用（通常登录后才可用）
-            input_selectors = ["textarea", "input[type='text']", "[role='textbox']", "[contenteditable='true']"]
-            for selector in input_selectors:
-                try:
-                    elems = await self.page.query_selector_all(selector)
-                    if elems:
-                        for elem in elems:
-                            if await elem.is_visible():
-                                logger.info(f"{self.name}已登录，找到输入框")
-                                return True
-                except:
-                    continue
-            
-            logger.info(f"{self.name}无法确定登录状态")
-            return False
+            logger.info(f"{self.name}无法通过元素确定登录状态")
+            return None
         except Exception as e:
             logger.error(f"{self.name}检查登录状态时出错：{str(e)}")
-            return False
+            return None
     
     async def _login(self) -> bool:
         if not self.username or not self.password:
@@ -601,7 +587,16 @@ class BaseAdapter(ABC):
             current_url = self.page.url
             logger.info(f"{self.name}检查登录状态，当前URL: {current_url}")
             
-            # 优先通过 URL 模式判断登录状态（各平台可覆盖）
+            # 优先调用各平台覆盖的_check_login_status方法（更精确的登录检测）
+            login_status = await self._check_login_status()
+            if login_status is not None:
+                if login_status:
+                    logger.info(f"{self.name}通过元素检测判定已登录")
+                else:
+                    logger.info(f"{self.name}通过元素检测判定未登录")
+                return login_status
+            
+            # 通过URL模式判断登录状态（各平台可覆盖）
             url_check_result = await self._check_login_url_pattern(current_url)
             if url_check_result is not None:
                 if url_check_result:

@@ -70,3 +70,11 @@
 3. ✅ 完成 excel_exporter.py 的批量导出功能（已实现详细报告和汇总报告）
 4. ✅ 编写 main.py 主入口程序（已完成）
 5. ✅ 完善配置文件支持多平台并行测试（已支持5个平台）
+
+## 阶段8：文心一言平台优化（2026-07-16）✅ 已完成
+1. ✅ 优化文心一言登录状态检测：基于 `aiTabFrameBaseData` JSON 数据中的 `isUserLogin` 字段精确判断
+2. ✅ 修复文心一言分享图片功能：实现分享按钮 → 生成图片 → 保存图片的完整流程
+3. ✅ 修复文心一言分享链接功能：添加 URL 过滤逻辑，只保存有效的 HTTP 链接
+4. ✅ 清理 ernie.py 中的调试代码和重复方法（_default_screenshot, _check_login_url_pattern）
+5. ✅ 更新 requirements.txt：移除未使用依赖，添加缺失依赖（pyperclip）
+6. ✅ 更新 README.md 更新日志

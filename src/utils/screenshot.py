@@ -162,6 +162,8 @@ class ScreenshotTool:
             return await self._qwen_download_shared_image(page, question)
         elif platform_id == "deepseek":
             return await self._deepseek_download_shared_image(page, question)
+        elif platform_id == "ernie":
+            return await self._ernie_download_shared_image(page, question)
         else:
             return await self._doubao_download_shared_image(page, platform_id, question)
 
@@ -1162,3 +1164,195 @@ class ScreenshotTool:
         except Exception as e:
             logger.error(f"{platform_id}【第三步】分享链接获取失败: {str(e)}")
             return str(download_path) if 'download_path' in locals() else None, None, str(e)
+
+    async def _ernie_download_shared_image(self, page: Page, question: Question) -> tuple[Optional[str], Optional[str], Optional[str]]:
+        """文心一言平台：获取分享图片和链接"""
+        try:
+            platform_id = "ernie"
+            download_path = self.screenshot_dir / f"{platform_id}_{question.id}_{question.timestamp.strftime('%Y%m%d_%H%M%S')}_shared.png"
+            shared_link = None
+            share_error = None
+
+            logger.info(f"{platform_id}【第一步】查找分享按钮...")
+            
+            share_button_selectors = [
+                "div[class*='share']",
+                "button[class*='share']",
+                "svg[class*='share']",
+                "[class*='share-btn']",
+                "[class*='share-button']",
+                "[data-testid*='share']",
+                ".share-icon",
+                "button:has(svg[class*='share'])"
+            ]
+            
+            share_button = None
+            for selector in share_button_selectors:
+                try:
+                    elems = await page.query_selector_all(selector)
+                    if elems:
+                        for elem in elems:
+                            if await elem.is_visible():
+                                share_button = elem
+                                logger.info(f"{platform_id}【第一步】找到分享按钮: {selector}")
+                                break
+                        if share_button:
+                            break
+                except:
+                    continue
+            
+            if not share_button:
+                logger.info(f"{platform_id}【第一步】未找到分享按钮，返回")
+                return None, None, "未找到分享按钮"
+
+            try:
+                await share_button.click(timeout=5000)
+                await page.wait_for_timeout(3000)
+                logger.info(f"{platform_id}【第一步】点击分享按钮")
+            except Exception as e:
+                logger.info(f"{platform_id}【第一步】点击分享按钮失败: {str(e)}")
+                return None, None, str(e)
+
+            logger.info(f"{platform_id}【第二步】查找生成图片按钮...")
+            
+            generate_selectors = [
+                "button:has-text('生成图片')",
+                "button:has-text('分享图片')",
+                "button:has-text('图片')",
+                "button:has-text('generate image')",
+                "button:has-text('generate')",
+                "[class*='generate']",
+                "[class*='image']",
+                "[class*='img']",
+                "[data-testid*='generate']",
+                "[data-testid*='image']",
+                "[class*='share-image']"
+            ]
+            
+            generate_button = None
+            for selector in generate_selectors:
+                try:
+                    elems = await page.query_selector_all(selector)
+                    if elems:
+                        for elem in elems:
+                            if await elem.is_visible():
+                                generate_button = elem
+                                logger.info(f"{platform_id}【第二步】找到生成图片按钮: {selector}")
+                                break
+                        if generate_button:
+                            break
+                except:
+                    continue
+            
+            if not generate_button:
+                logger.info(f"{platform_id}【第二步】未找到生成图片按钮，尝试查找复制链接")
+                
+                try:
+                    pyperclip.copy("")
+                except:
+                    pass
+                
+                copy_link_selectors = [
+                    "button:has-text('复制链接')",
+                    "button:has-text('分享链接')",
+                    "button:has-text('复制')",
+                    "[class*='copy']",
+                    "[class*='link']"
+                ]
+                
+                copy_button = None
+                for selector in copy_link_selectors:
+                    try:
+                        elems = await page.query_selector_all(selector)
+                        if elems:
+                            for elem in elems:
+                                if await elem.is_visible():
+                                    copy_button = elem
+                                    logger.info(f"{platform_id}【第二步】找到复制链接按钮: {selector}")
+                                    break
+                            if copy_button:
+                                break
+                    except:
+                        continue
+                
+                if copy_button:
+                    try:
+                        await copy_button.click(timeout=5000)
+                        await page.wait_for_timeout(2000)
+                        clipboard_content = pyperclip.paste()
+                        if clipboard_content and clipboard_content.strip().startswith('http'):
+                            shared_link = clipboard_content
+                            logger.info(f"{platform_id}【第二步】复制链接成功: {shared_link[:50]}...")
+                        else:
+                            logger.info(f"{platform_id}【第二步】复制的不是URL，跳过")
+                    except Exception as e:
+                        logger.info(f"{platform_id}【第二步】复制链接失败: {str(e)}")
+                
+                await page.keyboard.press("Escape")
+                return None, shared_link, share_error
+
+            try:
+                await generate_button.click(timeout=5000)
+                await page.wait_for_timeout(5000)
+                logger.info(f"{platform_id}【第二步】点击生成图片按钮")
+            except Exception as e:
+                logger.info(f"{platform_id}【第二步】点击生成图片按钮失败: {str(e)}")
+                await page.keyboard.press("Escape")
+                return None, shared_link, share_error
+
+            logger.info(f"{platform_id}【第三步】查找保存图片按钮...")
+            
+            save_selectors = [
+                "button:has-text('保存图片')",
+                "button:has-text('保存')",
+                "button:has-text('下载')",
+                "button:has-text('save image')",
+                "button:has-text('save')",
+                "button:has-text('download')",
+                "[class*='save']",
+                "[class*='download']",
+                "[download]",
+                "[data-testid*='save']",
+                "[data-testid*='download']"
+            ]
+            
+            save_button = None
+            for selector in save_selectors:
+                try:
+                    elems = await page.query_selector_all(selector)
+                    if elems:
+                        for elem in elems:
+                            if await elem.is_visible():
+                                save_button = elem
+                                logger.info(f"{platform_id}【第三步】找到保存图片按钮: {selector}")
+                                break
+                        if save_button:
+                            break
+                except:
+                    continue
+            
+            if save_button:
+                try:
+                    async with page.expect_download(timeout=15000) as download_info:
+                        await save_button.click(timeout=5000)
+                        download = await download_info.value
+                        await download.save_as(str(download_path))
+                        logger.info(f"{platform_id}【第三步】图片已下载: {download_path}")
+                except Exception as e:
+                    logger.info(f"{platform_id}【第三步】下载图片失败: {str(e)}")
+                    await page.screenshot(path=str(download_path), full_page=True)
+            else:
+                logger.info(f"{platform_id}【第三步】未找到保存按钮，使用页面截图")
+                await page.screenshot(path=str(download_path), full_page=True)
+
+            await page.keyboard.press("Escape")
+            logger.info(f"{platform_id}分享流程完成")
+            return str(download_path), shared_link, share_error
+
+        except Exception as e:
+            logger.error(f"{platform_id}下载分享图片失败：{str(e)}")
+            try:
+                await page.keyboard.press("Escape")
+            except:
+                pass
+            return None, None, str(e)

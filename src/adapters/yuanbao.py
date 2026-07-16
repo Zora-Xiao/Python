@@ -151,33 +151,60 @@ class YuanbaoAdapter(BaseAdapter):
             
             logger.info("元宝等待AI回答中...")
             
-            max_wait_time = 120
-            check_interval = 2000
+            max_wait_time = 180
+            check_interval = 1500
             waited_time = 0
             
-            # 根据提供的HTML结构，AI回答的容器选择器
-            answer_container_selectors = [
-                "div.agent-chat__conv--ai__speech_show",
-                "div.agent-chat__bubble--ai"
+            last_valid_answer = ""
+            stable_count = 0
+            stable_threshold = 5
+            
+            answer_selectors = [
+                "div.agent-chat__conv--ai__speech_show .agent-chat__speech-text",
+                "div.agent-chat__bubble__content .hyc-common-markdown",
+                "div.agent-chat__bubble--ai .hyc-component-text",
+                "div.agent-chat__speech-text--box",
+                "div.hyc-content-md",
+                ".message-content",
+                ".answer-content",
+                ".response-content",
+                ".chat-message",
+                ".assistant-message",
+                "[role='listitem']",
+                ".message-body",
+                ".markdown-body",
+                ".prose",
+                ".content",
+                "[class*='message-content']",
+                "[class*='answer']",
+                "[class*='response']",
+                "[class*='markdown']",
+                "[class*='speech']"
+            ]
+            
+            typing_indicators = [
+                ".typing",
+                "[class*='typing']",
+                "[aria-label*='typing']",
+                ".loading",
+                "[class*='loading']",
+                "span:has-text('typing')",
+                "span:has-text('正在输入')",
+                "span:has-text('正在思考')",
+                "span:has-text('正在生成')",
+                "span:has-text('AI正在思考')",
+                "span:has-text('AI正在回答')",
+                "span:has-text('正在撰写')",
+                "div[class*='thinking']",
+                "div[class*='spin']",
+                "div[class*='dot']",
+                "div[class*='pulse']",
+                ".ant-spin",
+                "[class*='animate']"
             ]
             
             while waited_time < max_wait_time:
                 try:
-                    # 检查是否有打字指示器（表明回答正在生成）
-                    typing_indicators = [
-                        ".typing",
-                        "[class*='typing']",
-                        "[aria-label*='typing']",
-                        ".loading",
-                        "[class*='loading']",
-                        "span:has-text('typing')",
-                        "span:has-text('正在输入')",
-                        "span:has-text('正在思考')",
-                        "span:has-text('正在生成')",
-                        "div[class*='thinking']",
-                        "div[class*='spin']"
-                    ]
-                    
                     is_typing = False
                     for selector in typing_indicators:
                         try:
@@ -192,29 +219,43 @@ class YuanbaoAdapter(BaseAdapter):
                         except:
                             continue
                     
-                    if is_typing:
-                        logger.debug(f"元宝AI正在回答中，已等待 {waited_time} 秒")
-                        await self.page.wait_for_timeout(check_interval)
-                        waited_time += check_interval / 1000
-                        continue
-                    
-                    # 使用提供的HTML结构选择器检查回答
-                    for container_selector in answer_container_selectors:
+                    current_text = ""
+                    for selector in answer_selectors:
                         try:
-                            answer_elements = await self.page.query_selector_all(container_selector)
-                            if answer_elements and len(answer_elements) > 0:
-                                last_answer = answer_elements[-1]
-                                answer_text = await last_answer.inner_text()
-                                if answer_text and answer_text.strip():
-                                    # 检查是否还有继续追加的迹象（末尾是否有"..."或其他标记）
-                                    trimmed_text = answer_text.strip()
-                                    if not trimmed_text.endswith('...') and not trimmed_text.endswith('。'):
-                                        logger.info(f"元宝回答已完成，内容长度: {len(answer_text)}")
-                                        return answer_text.strip()
+                            elems = await self.page.query_selector_all(selector)
+                            if elems and len(elems) > 0:
+                                last = elems[-1]
+                                is_visible = await last.is_visible()
+                                if is_visible:
+                                    text = await last.inner_text()
+                                    if text and len(text.strip()) > 5:
+                                        if text.strip() == question:
+                                            continue
+                                        if text.strip().startswith(question[:20]):
+                                            continue
+                                        current_text = text.strip()
+                                        break
                         except Exception as e:
-                            logger.debug(f"检查回答容器 '{container_selector}' 失败: {e}")
+                            logger.debug(f"获取回答 {selector} 失败：{str(e)}")
+                            continue
                     
-                    # 如果没有找到回答，继续等待
+                    if current_text:
+                        if current_text == last_valid_answer:
+                            stable_count += 1
+                            if stable_count >= stable_threshold:
+                                logger.info(f"元宝回答已完成，内容长度: {len(current_text)}")
+                                return current_text
+                        else:
+                            stable_count = 0
+                            last_valid_answer = current_text
+                    
+                    if is_typing:
+                        logger.debug(f"元宝AI正在回答中，已等待 {waited_time:.1f} 秒")
+                    elif last_valid_answer:
+                        if stable_count >= stable_threshold:
+                            logger.info(f"元宝回答已完成，内容长度: {len(last_valid_answer)}")
+                            return last_valid_answer
+                    
                     await self.page.wait_for_timeout(check_interval)
                     waited_time += check_interval / 1000
                     
@@ -222,6 +263,10 @@ class YuanbaoAdapter(BaseAdapter):
                     logger.debug(f"元宝等待回答时出错: {str(e)}")
                     await self.page.wait_for_timeout(check_interval)
                     waited_time += check_interval / 1000
+            
+            if last_valid_answer:
+                logger.info(f"元宝等待超时，但获取到部分回答，长度: {len(last_valid_answer)}")
+                return last_valid_answer
             
             logger.warning(f"元宝等待回答超时（{max_wait_time}秒），尝试获取当前内容")
             return await self._get_answer()

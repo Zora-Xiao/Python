@@ -15,97 +15,155 @@ class DoubaoAdapter(BaseAdapter):
 
     async def _execute_login(self) -> bool:
         try:
+            await self.page.wait_for_timeout(3000)
+            
             login_button_selectors = [
+                "button:has-text('登录')",
                 "button:has-text('login')",
                 "button:has-text('Sign In')",
+                "a:has-text('登录')",
                 "[data-testid='login']",
-                ".login-btn"
+                ".login-btn",
+                "[class*='login']",
+                "[class*='signin']"
             ]
 
-            login_button = None
+            login_button_elem = None
             for selector in login_button_selectors:
                 try:
-                    await self.page.wait_for_selector(selector, timeout=5000)
-                    login_button = selector
-                    break
-                except:
+                    elems = await self.page.query_selector_all(selector)
+                    if elems:
+                        for elem in elems:
+                            if await elem.is_visible():
+                                login_button_elem = elem
+                                logger.info(f"豆包找到登录按钮: {selector}")
+                                break
+                        if login_button_elem:
+                            break
+                except Exception as e:
+                    logger.debug(f"豆包尝试查找登录按钮 {selector} 失败: {str(e)}")
                     continue
 
-            if not login_button:
+            if not login_button_elem:
                 logger.warning("豆包登录按钮未找到")
                 return False
 
-            await self.page.click(login_button)
-            await self.page.wait_for_timeout(2000)
+            await login_button_elem.click()
+            await self.page.wait_for_timeout(3000)
 
             username_selectors = [
                 "input[name='username']",
                 "input[name='email']",
                 "input[name='phone']",
-                "input[type='text']"
+                "input[type='text']",
+                "[placeholder*='用户名']",
+                "[placeholder*='邮箱']",
+                "[placeholder*='手机号']",
+                "[placeholder*='email']",
+                "[placeholder*='phone']",
+                "[data-testid*='username']",
+                "[data-testid*='email']",
+                ".ant-input",
+                "input[class*='input']"
             ]
 
-            username_selector = None
+            username_elem = None
             for selector in username_selectors:
                 try:
-                    await self.page.wait_for_selector(selector, timeout=3000)
-                    username_selector = selector
-                    break
-                except:
+                    elems = await self.page.query_selector_all(selector)
+                    if elems:
+                        for elem in elems:
+                            if await elem.is_visible():
+                                username_elem = elem
+                                await elem.fill(self.username)
+                                await self.page.wait_for_timeout(500)
+                                logger.info(f"豆包找到用户名输入框: {selector}")
+                                break
+                        if username_elem:
+                            break
+                except Exception as e:
+                    logger.debug(f"豆包尝试填写用户名 {selector} 失败: {str(e)}")
                     continue
 
-            if username_selector:
-                await self.page.fill(username_selector, self.username)
-                await self.page.wait_for_timeout(500)
-            else:
+            if not username_elem:
                 logger.warning("豆包用户名输入框未找到")
                 return False
 
             password_selectors = [
                 "input[name='password']",
-                "input[type='password']"
+                "input[type='password']",
+                "[placeholder*='密码']",
+                "[placeholder*='password']",
+                "[data-testid*='password']",
+                ".ant-input-password",
+                "input[class*='password']"
             ]
 
-            password_selector = None
+            password_elem = None
             for selector in password_selectors:
                 try:
-                    await self.page.wait_for_selector(selector, timeout=3000)
-                    password_selector = selector
-                    break
-                except:
+                    elems = await self.page.query_selector_all(selector)
+                    if elems:
+                        for elem in elems:
+                            if await elem.is_visible():
+                                password_elem = elem
+                                await elem.fill(self.password)
+                                await self.page.wait_for_timeout(500)
+                                logger.info(f"豆包找到密码输入框: {selector}")
+                                break
+                        if password_elem:
+                            break
+                except Exception as e:
+                    logger.debug(f"豆包尝试填写密码 {selector} 失败: {str(e)}")
                     continue
 
-            if password_selector:
-                await self.page.fill(password_selector, self.password)
-                await self.page.wait_for_timeout(500)
-            else:
+            if not password_elem:
                 logger.warning("豆包密码输入框未找到")
                 return False
 
             submit_selectors = [
                 "button[type='submit']",
+                "button:has-text('登录')",
                 "button:has-text('login')",
                 "button:has-text('confirm')",
-                ".submit-btn"
+                ".submit-btn",
+                "[class*='btn-primary']",
+                "[class*='btn-login']",
+                "[data-testid*='submit']"
             ]
 
-            submit_selector = None
+            submit_elem = None
             for selector in submit_selectors:
                 try:
-                    await self.page.wait_for_selector(selector, timeout=3000)
-                    submit_selector = selector
-                    break
-                except:
+                    elems = await self.page.query_selector_all(selector)
+                    if elems:
+                        for elem in elems:
+                            if await elem.is_visible():
+                                submit_elem = elem
+                                await elem.click()
+                                await self.page.wait_for_timeout(5000)
+                                logger.info(f"豆包点击提交按钮: {selector}")
+                                break
+                        if submit_elem:
+                            break
+                except Exception as e:
+                    logger.debug(f"豆包尝试点击提交按钮 {selector} 失败: {str(e)}")
                     continue
 
-            if submit_selector:
-                await self.page.click(submit_selector)
-                await self.page.wait_for_timeout(5000)
-                logger.info("豆包登录表单已提交")
-            else:
+            if not submit_elem:
                 logger.warning("豆包提交按钮未找到")
+                return False
 
-            return True
+            await self.page.wait_for_timeout(3000)
+            
+            current_url = self.page.url
+            if "login" not in current_url.lower() and "signin" not in current_url.lower():
+                logger.info(f"豆包登录成功，当前URL: {current_url}")
+                return True
+            else:
+                logger.warning(f"豆包登录后仍在登录页面，可能登录失败")
+                return False
+                
         except Exception as e:
             logger.error(f"豆包登录失败：{str(e)}")
             return False
@@ -532,5 +590,74 @@ class DoubaoAdapter(BaseAdapter):
             logger.error(f"豆包默认截图失败：{str(e)}")
             return None, False, None, str(e)
 
+    async def _check_login_url_pattern(self, url: str) -> bool:
+        url_lower = url.lower()
+        if "login" in url_lower or "auth" in url_lower or "signin" in url_lower:
+            return False
+        return None
+    
+    async def _check_login_status(self) -> bool:
+        try:
+            await self.page.wait_for_timeout(2000)
+            
+            logged_in_indicators = [
+                ".user-avatar",
+                ".avatar",
+                "[class*='avatar']",
+                "[data-testid*='avatar']",
+                "button:has-text('退出')",
+                "button:has-text('Logout')",
+                "a:has-text('退出')",
+                "a:has-text('Logout')",
+                "[class*='user-info']",
+                "[class*='user-profile']",
+                "[class*='logout']",
+                "[class*='header-user']",
+                "[class*='nickname']",
+                "[class*='user-name']"
+            ]
+            
+            for selector in logged_in_indicators:
+                try:
+                    elems = await self.page.query_selector_all(selector)
+                    if elems:
+                        for elem in elems:
+                            if await elem.is_visible():
+                                logger.info(f"{self.platform_id}已登录，找到元素: {selector}")
+                                return True
+                except Exception as e:
+                    logger.debug(f"{self.platform_id}检查选择器 {selector} 失败: {str(e)}")
+                    continue
+            
+            login_indicators = [
+                "button:has-text('登录')",
+                "a:has-text('登录')",
+                "[class*='login']",
+                "[placeholder*='用户名']",
+                "[placeholder*='密码']",
+                "input[type='password']",
+                "[class*='sign-in']",
+                "[class*='signin']"
+            ]
+            
+            for selector in login_indicators:
+                try:
+                    elems = await self.page.query_selector_all(selector)
+                    if elems:
+                        for elem in elems:
+                            if await elem.is_visible():
+                                logger.info(f"{self.platform_id}未登录，检测到登录元素: {selector}")
+                                return False
+                except Exception as e:
+                    logger.debug(f"{self.platform_id}检查登录选择器 {selector} 失败: {str(e)}")
+                    continue
+            
+            logger.info(f"{self.platform_id}未找到明确的登录/登出指示元素")
+            return False
+            
+        except Exception as e:
+            logger.error(f"{self.platform_id}检查登录状态失败: {str(e)}")
+            return False
+    
     async def close(self):
         await super().close()
