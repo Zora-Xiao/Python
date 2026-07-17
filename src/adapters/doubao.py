@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import random
 import time
+import json
 from typing import Optional
 from src.adapters.base import BaseAdapter
 from src.models.question import Question
@@ -296,34 +297,117 @@ class DoubaoAdapter(BaseAdapter):
                     raise Exception("验证码处理失败")
 
             input_selectors = [
+                "[data-dbx-name='textarea']",
+                "textarea[placeholder*='提问']",
+                "textarea[placeholder*='聊天']",
+                "textarea[placeholder*='问我']",
                 "textarea",
-                "textarea[placeholder*='ask']",
-                "textarea[placeholder*='Message']",
-                "textarea[placeholder*='Send']",
-                "input[type='text']",
+                "[role='textbox']",
                 "div[contenteditable='true']",
-                "[role='textbox']"
             ]
 
-            input_selector = None
+            input_elem = None
             for selector in input_selectors:
                 try:
-                    await self.page.wait_for_selector(selector, timeout=10000)
-                    input_selector = selector
-                    break
+                    elems = await self.page.query_selector_all(selector)
+                    if elems:
+                        for elem in elems:
+                            if await elem.is_visible():
+                                input_elem = elem
+                                break
+                        if input_elem:
+                            break
                 except:
                     continue
 
-            if not input_selector:
+            if not input_elem:
                 raise Exception("输入框未找到")
 
-            await self.page.click(input_selector)
+            await input_elem.click()
             await self.page.wait_for_timeout(random.randint(300, 800))
-            await self.page.fill(input_selector, question)
+            
+            await input_elem.fill(question)
             await self.page.wait_for_timeout(random.randint(300, 800))
-            await self.page.press(input_selector, "Enter")
 
-            logger.info(f"豆包发送消息：{question[:30]}...")
+            send_button_selectors = [
+                "button:has-text('发送')",
+                "button:has-text('Send')",
+                "[data-dbx-name='button']",
+                "[class*='send']:not([class*='cancel']):not([class*='close'])",
+                "[class*='send-btn']",
+                "[class*='submit']:not([class*='cancel']):not([class*='close'])",
+                "[data-testid*='send']",
+                "button[type='submit']",
+                "[aria-label*='发送']",
+                "[aria-label*='Send']",
+            ]
+
+            send_button = None
+            for selector in send_button_selectors:
+                try:
+                    elems = await self.page.query_selector_all(selector)
+                    if elems:
+                        for elem in elems:
+                            if await elem.is_visible():
+                                try:
+                                    is_disabled = await elem.get_attribute("disabled")
+                                    aria_disabled = await elem.get_attribute("aria-disabled")
+                                    if not is_disabled and aria_disabled != "true":
+                                        send_button = elem
+                                        break
+                                except:
+                                    send_button = elem
+                                    break
+                        if send_button:
+                            break
+                except:
+                    continue
+
+            if send_button:
+                await send_button.click()
+                logger.info(f"豆包通过发送按钮发送消息：{question[:30]}...")
+            else:
+                await input_elem.press("Enter")
+                logger.info(f"豆包通过Enter键发送消息：{question[:30]}...")
+
+            await self.page.wait_for_timeout(2000)
+
+            input_text = await input_elem.input_value()
+            if input_text.strip() == question.strip():
+                logger.warning(f"消息可能未发送成功，输入框内容仍为: {input_text[:30]}")
+                
+                await self.page.wait_for_timeout(1000)
+                
+                try:
+                    js_result = await self.page.evaluate("(function() { const textarea = document.querySelector('textarea'); if (textarea) { textarea.dispatchEvent(new Event('input', { bubbles: true })); textarea.dispatchEvent(new Event('change', { bubbles: true })); textarea.focus(); const event = new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true, cancelable: true }); textarea.dispatchEvent(event); return 'JS Enter dispatched'; } return 'Textarea not found'; })()")
+                    logger.info(f"JavaScript模拟发送结果: {js_result}")
+                except Exception as e:
+                    logger.warning(f"JavaScript模拟发送失败: {str(e)}")
+                
+                await self.page.wait_for_timeout(1000)
+
+                input_text_after = await input_elem.input_value()
+                if input_text_after.strip() == question.strip():
+                    logger.warning("消息仍未发送成功，尝试刷新页面后重新发送")
+                    
+                    await self.page.reload(wait_until="domcontentloaded")
+                    await self.page.wait_for_timeout(5000)
+                    
+                    try:
+                        new_input_elem = await self.page.query_selector("textarea")
+                        if new_input_elem and await new_input_elem.is_visible():
+                            await new_input_elem.fill(question)
+                            await self.page.wait_for_timeout(1000)
+                            await new_input_elem.press("Enter")
+                            logger.info("页面刷新后重新发送消息")
+                        else:
+                            logger.warning("页面刷新后未找到输入框")
+                    except Exception as e:
+                        logger.warning(f"页面刷新后发送失败: {str(e)}")
+                    
+                    await self.page.wait_for_timeout(1000)
+            else:
+                logger.info(f"消息发送成功，输入框已清空")
 
         except Exception as e:
             logger.error(f"豆包发送消息失败：{str(e)}")
@@ -332,37 +416,38 @@ class DoubaoAdapter(BaseAdapter):
     async def _get_answer(self) -> str:
         try:
             answer_selectors = [
-                # 豆包实际HTML结构选择器（基于分析）
-                ".auto-hide-last-sibling-br.paragraph-element",
-                ".auto-hide-last-sibling-br.paragraph-pP9ZLC",
+                "[data-dbx-name='message']",
+                "[data-message-id]",
+                "[class*='message-item']",
+                "[class*='chat-message']",
                 ".flow-markdown-body",
                 ".md-box-root",
                 "[data-render-engine='node']",
                 "[data-container-type='block-v2']",
-                # 通用选择器
+                ".auto-hide-last-sibling-br",
                 ".message-content",
                 ".answer-content",
                 ".response-content",
-                ".chat-message",
                 ".assistant-message",
-                "[role='listitem']",
-                ".message-body",
                 ".markdown-body",
                 ".prose",
-                ".content"
+                ".content",
+                "[role='listitem']",
+                ".message-body",
             ]
 
-            max_wait = 120
+            max_wait = 180
             last_text = ""
             stable_count = 0
             question_text = "你好，请介绍一下你自己"
             
-            for _ in range(max_wait):
+            for i in range(max_wait):
                 if await self._check_captcha():
                     logger.warning("豆包获取回答过程中检测到验证码")
                     if not await self._handle_captcha():
                         return "验证码处理失败"
 
+                found_answer = False
                 for selector in answer_selectors:
                     try:
                         elems = await self.page.query_selector_all(selector)
@@ -388,33 +473,20 @@ class DoubaoAdapter(BaseAdapter):
                                     if stable_count >= 3 and len(text) > 30:
                                         logger.info(f"豆包成功获取回答：{text[:30]}...")
                                         return text
+                                    
+                                    if len(text) > 50 and stable_count >= 2:
+                                        logger.info(f"豆包获取回答（较短）：{text[:30]}...")
+                                        return text
+                                        
+                                    found_answer = True
                     except Exception as e:
                         continue
                 
-                try:
-                    messages = await self.page.query_selector_all("[data-message-id]")
-                    if messages and len(messages) > 0:
-                        last_msg = messages[-1]
-                        content = await last_msg.inner_text()
-                        content = content.strip()
-                        if content and len(content) > 10:
-                            if content == question_text:
-                                continue
-                            if content.strip().startswith(question_text):
-                                continue
-                                
-                            if content == last_text:
-                                stable_count += 1
-                            else:
-                                last_text = content
-                                stable_count = 0
-                            
-                            if stable_count >= 3 and len(content) > 30:
-                                logger.info(f"豆包通过data-message-id获取回答：{content[:30]}...")
-                                return content
-                except Exception:
-                    pass
-                    
+                if found_answer and last_text:
+                    logger.debug(f"豆包正在获取回答中... ({i}/{max_wait})")
+                else:
+                    logger.debug(f"豆包等待回答中... ({i}/{max_wait})")
+
                 await self.page.wait_for_timeout(1000)
 
             if last_text and len(last_text) > 10:
@@ -596,8 +668,84 @@ class DoubaoAdapter(BaseAdapter):
             return False
         return None
     
+    def _check_cookies_file_validity(self) -> bool:
+        """检查Cookie文件是否存在且有效
+        返回 True 表示Cookie文件存在且有效，False 表示Cookie文件不存在或无效"""
+        cookies_file = self._get_cookies_file()
+        
+        if not cookies_file.exists():
+            logger.info(f"豆包Cookie文件不存在: {cookies_file}")
+            return False
+        
+        try:
+            with open(cookies_file, 'r', encoding='utf-8') as f:
+                cookies = json.load(f)
+            
+            if not cookies or len(cookies) == 0:
+                logger.warning("豆包Cookie文件为空")
+                return False
+            
+            auth_cookie_names = [
+                "access_token", "session_id",
+                "doubao_token", "doubao_session",
+                "db_token", "db_session",
+                "_doubao_session", "__doubao_token",
+                "dtoken", "dsession",
+                "hook_slardar_session_id", "passport_csrf_token"
+            ]
+            
+            exact_auth_names = [
+                "token", "session", "user_id", "uid", "auth"
+            ]
+            
+            found_auth_cookie = False
+            cookie_details = []
+            for cookie in cookies:
+                cookie_name = cookie.get("name", "").lower()
+                cookie_value = cookie.get("value", "")
+                
+                matches_keyword = False
+                
+                for auth_name in auth_cookie_names:
+                    if auth_name in cookie_name:
+                        matches_keyword = True
+                        break
+                
+                if not matches_keyword:
+                    for exact_name in exact_auth_names:
+                        if cookie_name == exact_name:
+                            matches_keyword = True
+                            break
+                
+                if matches_keyword:
+                    if not cookie_value or len(cookie_value) < 10:
+                        continue
+                    
+                    found_auth_cookie = True
+                    cookie_details.append(f"{cookie_name}={cookie_value[:20]}...")
+            
+            if found_auth_cookie:
+                logger.info(f"豆包Cookie文件存在且包含有效登录Cookie: {', '.join(cookie_details)}")
+                return True
+            else:
+                logger.warning(f"豆包Cookie文件存在但未找到关键登录Cookie")
+                return False
+        
+        except json.JSONDecodeError:
+            logger.warning("豆包Cookie文件格式错误")
+            return False
+        except Exception as e:
+            logger.error(f"豆包检查Cookie失败: {str(e)}")
+            return False
+    
     async def _check_login_status(self) -> bool:
         try:
+            cookies_valid = self._check_cookies_file_validity()
+            
+            if not cookies_valid:
+                logger.info("豆包Cookie文件不存在或无效，需要登录")
+                return False
+            
             await self.page.wait_for_timeout(2000)
             
             logged_in_indicators = [
@@ -652,11 +800,96 @@ class DoubaoAdapter(BaseAdapter):
                     logger.debug(f"{self.platform_id}检查登录选择器 {selector} 失败: {str(e)}")
                     continue
             
-            logger.info(f"{self.platform_id}未找到明确的登录/登出指示元素")
-            return False
+            logger.info(f"{self.platform_id}未找到明确的登录/登出指示元素，但Cookie有效，判定已登录")
+            return True
             
         except Exception as e:
             logger.error(f"{self.platform_id}检查登录状态失败: {str(e)}")
+            return False
+    
+    async def _ensure_logged_in(self) -> bool:
+        """豆包平台登录流程：
+        1. Cookie文件不存在 → 等待手动登录
+        2. Cookie文件存在 → 判断是否有效
+        3. Cookie有效 → 直接进入后续流程
+        4. Cookie无效 → 回到等待手动登录状态"""
+        try:
+            if not self.page or self.page.is_closed():
+                logger.error(f"{self.name}页面已关闭，无法检查登录状态")
+                return False
+            
+            logger.info(f"{self.name}当前页面URL: {self.page.url}")
+            
+            cookies_file = self._get_cookies_file()
+            
+            if not cookies_file.exists():
+                logger.info("=" * 60)
+                logger.info("豆包Cookie文件不存在，需要登录")
+                logger.info("请在打开的浏览器中完成登录")
+                logger.info("等待登录完成（最多等待60秒）")
+                logger.info("=" * 60)
+                
+                for i in range(30):
+                    try:
+                        if not self.page or self.page.is_closed():
+                            logger.warning(f"{self.name}页面已关闭")
+                            return False
+                        
+                        logger.info(f"豆包等待登录中... ({i+1}/60)")
+                        await self.page.wait_for_timeout(2000)
+                        
+                        if await self._check_login_status():
+                            logger.info("豆包登录成功")
+                            await self._save_cookies(self.page.context)
+                            return True
+                            
+                    except Exception as e:
+                        logger.warning(f"豆包登录检查中错误: {str(e)}")
+                        if not self.page or self.page.is_closed():
+                            return False
+                        continue
+                
+                logger.warning("豆包登录超时")
+                return False
+            
+            else:
+                logger.info(f"豆包Cookie文件存在: {cookies_file}")
+                
+                if self._check_cookies_file_validity():
+                    logger.info("豆包Cookie有效，直接进入后续流程")
+                    return True
+                else:
+                    logger.info("=" * 60)
+                    logger.info("豆包Cookie文件存在但无效，需要重新登录")
+                    logger.info("请在打开的浏览器中完成登录")
+                    logger.info("等待登录完成（最多等待60秒）")
+                    logger.info("=" * 60)
+                    
+                    for i in range(30):
+                        try:
+                            if not self.page or self.page.is_closed():
+                                logger.warning(f"{self.name}页面已关闭")
+                                return False
+                            
+                            logger.info(f"豆包等待登录中... ({i+1}/60)")
+                            await self.page.wait_for_timeout(2000)
+                            
+                            if await self._check_login_status():
+                                logger.info("豆包登录成功")
+                                await self._save_cookies(self.page.context)
+                                return True
+                                
+                        except Exception as e:
+                            logger.warning(f"豆包登录检查中错误: {str(e)}")
+                            if not self.page or self.page.is_closed():
+                                return False
+                            continue
+                    
+                    logger.warning("豆包登录超时")
+                    return False
+            
+        except Exception as e:
+            logger.error(f"豆包登录处理失败: {str(e)}")
             return False
     
     async def close(self):
