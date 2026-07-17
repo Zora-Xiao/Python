@@ -740,12 +740,6 @@ class DoubaoAdapter(BaseAdapter):
     
     async def _check_login_status(self) -> bool:
         try:
-            cookies_valid = self._check_cookies_file_validity()
-            
-            if not cookies_valid:
-                logger.info("豆包Cookie文件不存在或无效，需要登录")
-                return False
-            
             await self.page.wait_for_timeout(2000)
             
             logged_in_indicators = [
@@ -762,7 +756,8 @@ class DoubaoAdapter(BaseAdapter):
                 "[class*='logout']",
                 "[class*='header-user']",
                 "[class*='nickname']",
-                "[class*='user-name']"
+                "[class*='user-name']",
+                "[data-dbx-name='avatar']",
             ]
             
             for selector in logged_in_indicators:
@@ -800,8 +795,27 @@ class DoubaoAdapter(BaseAdapter):
                     logger.debug(f"{self.platform_id}检查登录选择器 {selector} 失败: {str(e)}")
                     continue
             
-            logger.info(f"{self.platform_id}未找到明确的登录/登出指示元素，但Cookie有效，判定已登录")
-            return True
+            chat_input_selectors = [
+                "[data-dbx-name='textarea']",
+                "textarea[placeholder*='提问']",
+                "textarea[placeholder*='聊天']",
+                "textarea",
+                "[role='textbox']",
+            ]
+            
+            for selector in chat_input_selectors:
+                try:
+                    elems = await self.page.query_selector_all(selector)
+                    if elems:
+                        for elem in elems:
+                            if await elem.is_visible():
+                                logger.info(f"{self.platform_id}已登录，找到聊天输入框: {selector}")
+                                return True
+                except Exception as e:
+                    continue
+            
+            logger.info(f"{self.platform_id}未找到明确的登录/登出指示元素，判定未登录")
+            return False
             
         except Exception as e:
             logger.error(f"{self.platform_id}检查登录状态失败: {str(e)}")
@@ -811,8 +825,8 @@ class DoubaoAdapter(BaseAdapter):
         """豆包平台登录流程：
         1. Cookie文件不存在 → 等待手动登录
         2. Cookie文件存在 → 判断是否有效
-        3. Cookie有效 → 直接进入后续流程
-        4. Cookie无效 → 回到等待手动登录状态"""
+        3. Cookie有效 → 检查页面实际登录状态，已登录则进入后续流程，未登录则等待手动登录
+        4. Cookie无效 → 等待手动登录"""
         try:
             if not self.page or self.page.is_closed():
                 logger.error(f"{self.name}页面已关闭，无法检查登录状态")
@@ -826,19 +840,22 @@ class DoubaoAdapter(BaseAdapter):
                 logger.info("=" * 60)
                 logger.info("豆包Cookie文件不存在，需要登录")
                 logger.info("请在打开的浏览器中完成登录")
-                logger.info("等待登录完成（最多等待60秒）")
+                logger.info("等待登录完成（最多等待120秒）")
                 logger.info("=" * 60)
                 
-                for i in range(30):
+                await self.page.wait_for_timeout(3000)
+                
+                for i in range(60):
                     try:
                         if not self.page or self.page.is_closed():
                             logger.warning(f"{self.name}页面已关闭")
                             return False
                         
-                        logger.info(f"豆包等待登录中... ({i+1}/60)")
+                        logger.info(f"豆包等待登录中... ({i+1}/120)")
                         await self.page.wait_for_timeout(2000)
                         
-                        if await self._check_login_status():
+                        login_status = await self._check_login_status()
+                        if login_status:
                             logger.info("豆包登录成功")
                             await self._save_cookies(self.page.context)
                             return True
@@ -856,22 +873,59 @@ class DoubaoAdapter(BaseAdapter):
                 logger.info(f"豆包Cookie文件存在: {cookies_file}")
                 
                 if self._check_cookies_file_validity():
-                    logger.info("豆包Cookie有效，直接进入后续流程")
-                    return True
+                    logger.info("豆包Cookie文件有效，检查页面实际登录状态...")
+                    
+                    await self.page.wait_for_timeout(3000)
+                    
+                    login_status = await self._check_login_status()
+                    if login_status:
+                        logger.info("豆包页面已登录，直接进入后续流程")
+                        return True
+                    else:
+                        logger.info("=" * 60)
+                        logger.info("豆包Cookie文件有效但页面未登录，需要重新登录")
+                        logger.info("请在打开的浏览器中完成登录")
+                        logger.info("等待登录完成（最多等待120秒）")
+                        logger.info("=" * 60)
+                        
+                        for i in range(60):
+                            try:
+                                if not self.page or self.page.is_closed():
+                                    logger.warning(f"{self.name}页面已关闭")
+                                    return False
+                                
+                                logger.info(f"豆包等待登录中... ({i+1}/120)")
+                                await self.page.wait_for_timeout(2000)
+                                
+                                if await self._check_login_status():
+                                    logger.info("豆包登录成功")
+                                    await self._save_cookies(self.page.context)
+                                    return True
+                                    
+                            except Exception as e:
+                                logger.warning(f"豆包登录检查中错误: {str(e)}")
+                                if not self.page or self.page.is_closed():
+                                    return False
+                                continue
+                        
+                        logger.warning("豆包登录超时")
+                        return False
                 else:
                     logger.info("=" * 60)
                     logger.info("豆包Cookie文件存在但无效，需要重新登录")
                     logger.info("请在打开的浏览器中完成登录")
-                    logger.info("等待登录完成（最多等待60秒）")
+                    logger.info("等待登录完成（最多等待120秒）")
                     logger.info("=" * 60)
                     
-                    for i in range(30):
+                    await self.page.wait_for_timeout(3000)
+                    
+                    for i in range(60):
                         try:
                             if not self.page or self.page.is_closed():
                                 logger.warning(f"{self.name}页面已关闭")
                                 return False
                             
-                            logger.info(f"豆包等待登录中... ({i+1}/60)")
+                            logger.info(f"豆包等待登录中... ({i+1}/120)")
                             await self.page.wait_for_timeout(2000)
                             
                             if await self._check_login_status():
