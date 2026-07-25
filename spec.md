@@ -1,10 +1,13 @@
 # AI 问答评测工具 - Spec
 
 ## 1. 项目目标
+
 批量向多个AI平台发送固定问题，按规则自动判断回答质量，输出Excel报告并自动截图，用于对比各平台在特定场景下的表现。
 
 ## 2. 范围
+
 ### 包含
+
 - 问题列表与规则配置
 - 5大AI平台对接（豆包、元宝、千问、文心一言、Deepseek）
 - 异步并发调度 + 限速防封号
@@ -13,17 +16,20 @@
 - Excel结果导出（含截图嵌入）
 
 ### 不包含
+
 - GUI界面（纯命令行）
 - 付费API密钥管理（用户自行配置）
 - 人工审核环节
 
 ## 3. 核心流程
+
 1. 读取 config.yaml → 问题列表、规则、平台配置
 2. 初始化各平台适配器（API/Playwright）
 
 ### 登录方式
-- **DeepSeek**：自动登录（需配置 username/password），保存 Cookie，Cookie 验证失败时自动等待手动重新登录
-- **Qwen**：自动登录（需配置 username/password），保存 Cookie，Cookie 验证失败时自动等待手动重新登录
+
+- **DeepSeek**：自动登录（需配置 username/password）生成保存 Cookie，Cookie 验证失败时自动等待手动重新登录
+- **Qwen**：自动登录（需配置 username/password）生成保存 Cookie，Cookie 验证失败时自动等待手动重新登录
 - **其他平台（豆包、元宝、千问、文心）**：手动登录生成 Cookie，Cookie 验证失败时自动等待手动重新登录
 
 1. 并发调度：对每个问题，依次/错开发送到选中平台（支持顺序处理模式）
@@ -105,6 +111,7 @@
 6. 输出日志与报告文件
 
 ## 4. 技术约束
+
 - 语言：Python 3.11+
 - 并发：asyncio + aiohttp
 - 浏览器：Playwright（无头模式）

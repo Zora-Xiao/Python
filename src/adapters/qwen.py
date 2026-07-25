@@ -70,6 +70,7 @@ class QwenAdapter(BaseAdapter):
                 
                 current_url = self.page.url
                 if "login" not in current_url.lower() and "signin" not in current_url.lower():
+                    await self._save_cookies(self.page.context)
                     logger.info(f"{self.platform_id} 登录成功，当前URL: {current_url}")
                     return True
                 else:

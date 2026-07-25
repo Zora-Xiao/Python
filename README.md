@@ -174,9 +174,9 @@ python main.py config.yaml sequential
 ```
 
 **运行说明**：
-- **DeepSeek**：程序会自动登录（需配置 username 和 password），不保存 Cookie，每次运行都重新登录
-- **其他平台**：首次运行需要手动登录生成 Cookie，后续运行会自动验证 Cookie 有效性
-- 如果 Cookie 验证失败，程序会等待手动重新登录
+- **DeepSeek**：程序会自动登录（需配置 username 和 password），登录成功后保存 Cookie，后续运行自动验证 Cookie 有效性，Cookie 验证失败时等待手动重新登录
+- **Qwen**：程序会自动登录（需配置 username 和 password），登录成功后保存 Cookie，后续运行自动验证 Cookie 有效性，Cookie 验证失败时等待手动重新登录
+- **豆包、元宝、文心一言**：需要手动登录生成 Cookie，后续运行自动验证 Cookie 有效性，Cookie 验证失败时等待手动重新登录
 - **验证码处理**：当检测到验证码时，根据配置模式处理（manual：等待用户手动完成；fail：直接标记失败）
 
 ### 指定配置文件

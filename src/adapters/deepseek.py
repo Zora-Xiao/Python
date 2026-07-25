@@ -11,14 +11,6 @@ class DeepseekAdapter(BaseAdapter):
         self.platform_id = "deepseek"
         self.platform_url = config.get("web_url", "https://chat.deepseek.com/")
 
-    async def _load_cookies(self, context):
-        # DeepSeek 不加载已保存的 cookies，每次都重新登录
-        logger.info(f"{self.name} DeepSeek 不加载 Cookie，准备自动登录")
-
-    async def _save_cookies(self, context):
-        # DeepSeek 不保存 cookies，每次都重新登录
-        logger.info(f"{self.name} DeepSeek 不保存 Cookie")
-
     async def _check_login_url_pattern(self, url: str) -> bool:
         url_lower = url.lower()
         if "sign_in" in url_lower or "login" in url_lower:
@@ -26,45 +18,6 @@ class DeepseekAdapter(BaseAdapter):
         elif "chat" in url_lower and "deepseek" in url_lower:
             return True
         return None
-
-    async def _prepare_cookies_if_needed(self):
-        """DeepSeek平台每次都自动登录，不依赖cookies"""
-        logger.info(f"{self.name} DeepSeek平台每次都自动登录，不检查cookies")
-
-        try:
-            navigate_url = self.login_url if self.login_url else self.platform_url
-            if navigate_url:
-                logger.info(f"{self.name} 导航到: {navigate_url}")
-                await self.page.goto(navigate_url, wait_until="domcontentloaded", timeout=60000)
-            else:
-                logger.warning(f"{self.name} 未配置login_url或platform_url，无法导航")
-                return
-
-            if self.username and self.password:
-                logger.info(f"{self.name} 开始自动登录...")
-                if await self._execute_login():
-                    await self.page.wait_for_timeout(5000)
-                    
-                    current_url = self.page.url
-                    logger.info(f"{self.name} 自动登录后URL: {current_url}")
-                    
-                    if "sign_in" in current_url or "login" in current_url:
-                        logger.info(f"{self.name} 仍然在登录页面，尝试导航到聊天页面")
-                        await self.page.goto("https://chat.deepseek.com/", wait_until="domcontentloaded", timeout=60000)
-                        await self.page.wait_for_timeout(5000)
-                    
-                    if await self._check_login_status():
-                        logger.info(f"{self.name} 自动登录成功")
-                        return
-                    else:
-                        logger.warning(f"{self.name} 自动登录后未检测到登录状态")
-                else:
-                    logger.warning(f"{self.name} 自动登录失败")
-            else:
-                logger.warning(f"{self.name} 未配置用户名和密码，无法自动登录")
-
-        except Exception as e:
-            logger.error(f"{self.name} 自动登录过程错误: {str(e)}")
 
     async def _execute_login(self) -> bool:
         try:
@@ -369,9 +322,6 @@ class DeepseekAdapter(BaseAdapter):
 
             login_success = not ("sign_in" in current_url or "login" in current_url)
             logger.info(f"Deepseek: 登录成功判断: {login_success}, 当前URL: {current_url}")
-            
-            if login_success:
-                await self._save_cookies(self.page.context)
             
             return login_success
         except Exception as e:

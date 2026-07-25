@@ -13,61 +13,8 @@ class YuanbaoAdapter(BaseAdapter):
         self.platform_url = config.get("web_url", "https://yuanbao.tencent.com/chat/")
     
     async def _execute_login(self) -> bool:
-        try:
-            logger.info(f"{self.platform_id} 开始登录...")
-
-            login_button_selectors = [
-                "button:has-text('login')",
-                "button:has-text('Sign In')",
-                "[data-testid='login']",
-                ".login-btn"
-            ]
-
-            login_button = await self._find_visible_element(login_button_selectors)
-            if not login_button:
-                logger.warning(f"{self.platform_id} 登录按钮未找到")
-                return False
-
-            await login_button.click()
-            await self.page.wait_for_timeout(2000)
-
-            username_selectors = [
-                "input[name='username']",
-                "input[name='email']",
-                "input[name='phone']",
-                "input[type='text']"
-            ]
-
-            if not await self._fill_form_field(username_selectors, self.username):
-                logger.warning(f"{self.platform_id} 用户名输入框未找到")
-                return False
-
-            password_selectors = [
-                "input[name='password']",
-                "input[type='password']"
-            ]
-
-            if not await self._fill_form_field(password_selectors, self.password):
-                logger.warning(f"{self.platform_id} 密码输入框未找到")
-                return False
-
-            submit_selectors = [
-                "button[type='submit']",
-                "button:has-text('login')",
-                "button:has-text('submit')",
-                ".submit-btn"
-            ]
-
-            if await self._click_button(submit_selectors):
-                await self.page.wait_for_timeout(5000)
-                logger.info(f"{self.platform_id} 登录成功")
-            else:
-                logger.warning(f"{self.platform_id} 提交按钮未找到")
-
-            return True
-        except Exception as e:
-            logger.error(f"{self.platform_id} 登录失败：{str(e)}")
-            return False
+        logger.info(f"{self.name} 不支持自动登录，请手动登录")
+        return False
     
     async def _navigate_to_chat(self) -> bool:
         try:

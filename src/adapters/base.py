@@ -534,12 +534,12 @@ class BaseAdapter(ABC):
             logger.info("=" * 50)
             logger.info(f"? {self.name}需要登录")
             logger.info("? 请在打开的浏览器中完成登录")
-            logger.info("? 等待登录完成（最多等待60秒）")
+            logger.info("? 等待登录完成（最多等待120秒）")
             logger.info("? 登录完成后请保持浏览器窗口打开")
             logger.info("=" * 50)
             
-            # 等待用户手动登录，每2秒检查一次（最多等待60秒）
-            for i in range(30):
+            # 等待用户手动登录，每2秒检查一次（最多等待120秒）
+            for i in range(60):
                 try:
                     # 检查页面是否还存在
                     if not self.page:
@@ -550,7 +550,7 @@ class BaseAdapter(ABC):
                         logger.warning(f"{self.name}页面已关闭（循环第{i}次检查）")
                         return False
                     
-                    logger.info(f"{self.name}等待登录中... ({i+1}/60)")
+                    logger.info(f"{self.name}等待登录中... ({i+1}/120)")
                     await self.page.wait_for_timeout(2000)
                     
                     # 检查是否已登录
