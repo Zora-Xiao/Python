@@ -195,16 +195,18 @@ python main.py config.yaml sequential
 
 ### Excel 报告
 
-工具会生成两个 Excel 文件：
+工具会生成两个 Excel 文件（按日期命名，支持追加写入）：
 
-1. `evaluation_results.xlsx` - 详细评测结果
+1. `evaluation_results_YYYYMMDD.xlsx` - 详细评测结果
    - 问题 ID、平台名称、问题内容、回答内容
    - 状态、匹配规则、错误信息、时间戳
-   - 截图嵌入
+   - 截图嵌入（每张截图对应一行数据）
+   - **追加写入**：同一日期的多次运行会追加到同一文件，不会覆盖
 
-2. `summary.xlsx` - 汇总统计
+2. `summary_YYYYMMDD.xlsx` - 汇总统计
    - 总览统计
    - 各平台详细统计
+   - **追加写入**：同一日期的多次运行会追加统计数据
 
 ### 截图
 
