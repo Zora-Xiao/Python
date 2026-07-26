@@ -1,12 +1,13 @@
 from pathlib import Path
 from typing import List
 import pandas as pd
-from openpyxl import load_workbook
+from openpyxl import load_workbook, Workbook
 from openpyxl.drawing.image import Image as OpenpyxlImage
 from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
 from openpyxl.utils import get_column_letter
 from src.models.result import Result
 from src.utils.logger import logger
+from datetime import datetime
 
 
 class ExcelExporter:
@@ -14,12 +15,30 @@ class ExcelExporter:
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
     
+    def _generate_date_filename(self, filename: str) -> str:
+        """根据日期生成文件名，如 evaluation_results_20260726.xlsx"""
+        today = datetime.now()
+        date_str = today.strftime("%Y%m%d")
+        
+        base_name = Path(filename).stem
+        ext = Path(filename).suffix or ".xlsx"
+        
+        return f"{base_name}_{date_str}{ext}"
+    
     def export(self, results: List[Result], filename: str = "evaluation_results.xlsx") -> str:
         if not results:
             logger.warning("没有结果可导出")
             return ""
         
-        filepath = self.output_dir / filename
+        date_filename = self._generate_date_filename(filename)
+        filepath = self.output_dir / date_filename
+        
+        file_exists = filepath.exists()
+        
+        if file_exists:
+            logger.info(f"文件 {date_filename} 已存在，将追加数据")
+        else:
+            logger.info(f"文件 {date_filename} 不存在，将创建新文件")
         
         data = []
         for result in results:
@@ -45,24 +64,113 @@ class ExcelExporter:
                 "分享链接失败原因": result.share_link_error or ""
             })
         
-        df = pd.DataFrame(data)
-        df.to_excel(filepath, index=False, engine='openpyxl')
+        columns = list(data[0].keys()) if data else []
         
-        self._format_excel(filepath, results)
+        if file_exists:
+            self._append_to_existing_file(filepath, data, columns, results)
+        else:
+            self._create_new_file(filepath, data, columns, results)
         
-        # 导出分享链接到文本文件
         self._export_share_links(results)
         
         logger.info(f"Excel报告已导出: {filepath}")
         return str(filepath)
+    
+    def _create_new_file(self, filepath: Path, data: List[dict], columns: list, results: List[Result]):
+        """创建新的Excel文件"""
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "评测结果"
+        
+        self._write_header(ws, columns)
+        self._write_data_rows(ws, data, results, start_row=2)
+        self._format_columns(ws)
+        
+        wb.save(filepath)
+        logger.info(f"新Excel文件已创建: {filepath}")
+    
+    def _append_to_existing_file(self, filepath: Path, data: List[dict], columns: list, results: List[Result]):
+        """追加数据到已存在的Excel文件"""
+        wb = load_workbook(filepath)
+        ws = wb.active
+        
+        max_row = ws.max_row
+        start_row = max_row + 1
+        
+        logger.info(f"从第 {start_row} 行开始追加数据")
+        
+        self._write_data_rows(ws, data, results, start_row=start_row)
+        
+        wb.save(filepath)
+        logger.info(f"数据已追加到Excel文件: {filepath}")
+    
+    def _write_header(self, ws, columns: list):
+        """写入表头并设置样式"""
+        header_fill = PatternFill(start_color="4CAF50", end_color="4CAF50", fill_type="solid")
+        header_font = Font(bold=True, color="FFFFFF")
+        
+        for col_idx, col_name in enumerate(columns, start=1):
+            cell = ws.cell(row=1, column=col_idx, value=col_name)
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = Alignment(horizontal='center', vertical='center')
+    
+    def _write_data_rows(self, ws, data: List[dict], results: List[Result], start_row: int):
+        """写入数据行和截图"""
+        thin_border = Border(
+            left=Side(style='thin'),
+            right=Side(style='thin'),
+            top=Side(style='thin'),
+            bottom=Side(style='thin')
+        )
+        
+        columns = list(data[0].keys()) if data else []
+        
+        for row_offset, (row_data, result) in enumerate(zip(data, results), start=0):
+            current_row = start_row + row_offset
+            
+            for col_idx, col_name in enumerate(columns, start=1):
+                cell = ws.cell(row=current_row, column=col_idx, value=row_data.get(col_name, ""))
+                cell.border = thin_border
+                cell.alignment = Alignment(vertical='center', wrap_text=True)
+            
+            if result.screenshot_path:
+                screenshot_path = Path(result.screenshot_path)
+                if not screenshot_path.is_absolute():
+                    screenshot_path = Path.cwd() / result.screenshot_path
+                
+                if screenshot_path.exists():
+                    try:
+                        img = OpenpyxlImage(str(screenshot_path))
+                        img.width = 200
+                        img.height = 150
+                        
+                        img_cell = f'J{current_row}'
+                        ws.add_image(img, img_cell)
+                        
+                        ws.row_dimensions[current_row].height = 120
+                        logger.info(f"截图成功插入到单元格 {img_cell}")
+                    except Exception as e:
+                        logger.error(f"无法插入截图 {screenshot_path}: {str(e)}")
+                else:
+                    logger.warning(f"截图文件不存在: {screenshot_path}")
+    
+    def _format_columns(self, ws):
+        """设置列宽（仅在创建新文件时调用）"""
+        column_widths = {
+            'A': 12, 'B': 15, 'C': 40, 'D': 60, 'E': 10, 'F': 20,
+            'G': 30, 'H': 20, 'I': 20, 'J': 40, 'K': 50, 'L': 50
+        }
+        
+        for col, width in column_widths.items():
+            if col in ws.column_dimensions:
+                ws.column_dimensions[col].width = width
     
     def _export_share_links(self, results: List[Result]):
         """将分享链接追加到文本文件，保持和图片名称一致性"""
         links_filepath = self.output_dir / "share_links.txt"
         
         try:
-            from datetime import datetime
-            
             file_exists = links_filepath.exists()
             
             with open(links_filepath, 'a', encoding='utf-8') as f:
@@ -85,77 +193,15 @@ class ExcelExporter:
         except Exception as e:
             logger.error(f"导出分享链接失败: {str(e)}")
     
-    def _format_excel(self, filepath: Path, results: List[Result]):
-        wb = load_workbook(filepath)
-        ws = wb.active
-        
-        header_fill = PatternFill(start_color="4CAF50", end_color="4CAF50", fill_type="solid")
-        header_font = Font(bold=True, color="FFFFFF")
-        
-        for cell in ws[1]:
-            cell.fill = header_fill
-            cell.font = header_font
-            cell.alignment = Alignment(horizontal='center', vertical='center')
-        
-        thin_border = Border(
-            left=Side(style='thin'),
-            right=Side(style='thin'),
-            top=Side(style='thin'),
-            bottom=Side(style='thin')
-        )
-        
-        for row in ws.iter_rows():
-            for cell in row:
-                cell.border = thin_border
-        
-        ws.column_dimensions['A'].width = 12
-        ws.column_dimensions['B'].width = 15
-        ws.column_dimensions['C'].width = 40
-        ws.column_dimensions['D'].width = 60
-        ws.column_dimensions['E'].width = 10
-        ws.column_dimensions['F'].width = 20
-        ws.column_dimensions['G'].width = 30
-        ws.column_dimensions['H'].width = 20
-        ws.column_dimensions['I'].width = 20
-        ws.column_dimensions['J'].width = 40
-        ws.column_dimensions['K'].width = 50
-        ws.column_dimensions['L'].width = 50
-        
-        for idx, result in enumerate(results, start=2):
-            if result.screenshot_path:
-                # 确保使用绝对路径
-                screenshot_path = Path(result.screenshot_path)
-                if not screenshot_path.is_absolute():
-                    screenshot_path = Path.cwd() / result.screenshot_path
-                
-                logger.info(f"处理截图: {screenshot_path}, 存在: {screenshot_path.exists()}")
-                
-                if screenshot_path.exists():
-                    try:
-                        img = OpenpyxlImage(str(screenshot_path))
-                        img.width = 200
-                        img.height = 150
-                        
-                        img_cell = f'J{idx}'
-                        ws.add_image(img, img_cell)
-                        
-                        ws.row_dimensions[idx].height = 120
-                        logger.info(f"截图成功插入到单元格 {img_cell}")
-                    except Exception as e:
-                        logger.error(f"无法插入截图 {screenshot_path}: {str(e)}")
-                else:
-                    logger.warning(f"截图文件不存在: {screenshot_path}")
-            else:
-                logger.info(f"结果 {result.question_id} 没有截图路径")
-        
-        wb.save(filepath)
-    
     def export_summary(self, results: List[Result], filename: str = "summary.xlsx") -> str:
         if not results:
             logger.warning("没有结果可导出")
             return ""
         
-        filepath = self.output_dir / filename
+        date_filename = self._generate_date_filename(filename)
+        filepath = self.output_dir / date_filename
+        
+        file_exists = filepath.exists()
         
         summary_data = {
             "总结果数": len(results),
@@ -179,9 +225,23 @@ class ExcelExporter:
         df_summary = pd.DataFrame([summary_data])
         df_platforms = pd.DataFrame(platform_stats).T
         
-        with pd.ExcelWriter(filepath, engine='openpyxl') as writer:
-            df_summary.to_excel(writer, sheet_name='总览', index=False)
-            df_platforms.to_excel(writer, sheet_name='平台统计')
+        if file_exists:
+            wb = load_workbook(filepath)
+            if '总览' in wb.sheetnames:
+                ws = wb['总览']
+                max_row = ws.max_row
+                for _, row in df_summary.iterrows():
+                    ws.append(row.tolist())
+            if '平台统计' in wb.sheetnames:
+                ws = wb['平台统计']
+                max_row = ws.max_row
+                for idx, row in df_platforms.iterrows():
+                    ws.append([idx] + row.tolist())
+            wb.save(filepath)
+        else:
+            with pd.ExcelWriter(filepath, engine='openpyxl') as writer:
+                df_summary.to_excel(writer, sheet_name='总览', index=False)
+                df_platforms.to_excel(writer, sheet_name='平台统计')
         
         logger.info(f"汇总报告已导出: {filepath}")
         return str(filepath)

@@ -78,3 +78,20 @@
 4. ✅ 清理 ernie.py 中的调试代码和重复方法（_default_screenshot, _check_login_url_pattern）
 5. ✅ 更新 requirements.txt：移除未使用依赖，添加缺失依赖（pyperclip）
 6. ✅ 更新 README.md 更新日志
+
+## 阶段9：各平台登录流程优化（2026-07-25）
+
+1. ✅ DeepSeek平台：删除重写的 `_load_cookies` 和 `_save_cookies` 方法，使用基类标准流程，实现自动登录+Cookie保存+失败时手动重新登录
+2. ✅ Qwen平台：添加登录成功后保存Cookie步骤，确保自动登录+Cookie保存+失败时手动重新登录流程正确
+3. ✅ 豆包平台：简化 `_execute_login` 方法，返回False跳过自动登录，改为手动登录模式
+4. ✅ 元宝平台：简化 `_execute_login` 方法，返回False跳过自动登录，改为手动登录模式
+5. ✅ 文心一言平台：简化 `_execute_login` 方法，返回False跳过自动登录，改为手动登录模式
+6. ✅ 更新 README.md：修正各平台登录策略说明，明确DeepSeek/Qwen支持自动登录，其他平台需要手动登录
+
+## 阶段10：Excel导出功能优化（2026-07-26）
+
+1. ✅ 按日期生成Excel文件名（如 evaluation_results_20260726.xlsx）
+2. ✅ 支持追加写入：检测文件是否存在，存在则追加数据，不存在则创建新文件
+3. ✅ 截图嵌入功能：追加模式下正确计算行号，将截图插入到正确位置
+4. ✅ 汇总报告（export_summary）也支持按日期生成文件和追加写入
+5. ✅ 新增test_excel_export.py：测试日期文件名、创建新文件、追加写入、汇总报告等功能
